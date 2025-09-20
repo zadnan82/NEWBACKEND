@@ -454,9 +454,6 @@ async def save_cv_to_google_drive(
         }
 
 
-# Add this test endpoint to your google_drive_api.py to verify basic functionality
-
-
 @router.post("/test-save")
 async def test_save_endpoint(
     request: Request,
@@ -718,9 +715,6 @@ async def debug_google_drive_session(session: dict = Depends(get_current_session
         return {"error": str(e), "session_id": session.get("session_id", "unknown")}
 
 
-# Add this to your app/api/google_drive_api.py
-
-
 @router.get("/debug-download/{file_id}")
 async def debug_download_file(
     file_id: str,
@@ -882,7 +876,11 @@ async def update_cv_in_google_drive(
 # Add this to your app/api/google_drive_api.py file
 
 
-@router.post("/save-cover-letter")
+# Add these CLEAN cover letter endpoints to your google_drive_api.py
+# These are completely separate from CV endpoints and won't conflict
+
+
+@router.post("/cover-letter/save-cover-letter")
 async def save_cover_letter_to_google_drive(
     cover_letter_data: dict,
     session: dict = Depends(get_current_session),
@@ -976,11 +974,11 @@ async def save_cover_letter_to_google_drive(
         }
 
 
-@router.get("/list-cover-letters")
-async def list_cover_letters_from_google_drive(
+@router.get("/cover-letters")
+async def list_cover_letters_from_google_drive_clean(
     session: dict = Depends(get_current_session),
 ):
-    """List all cover letters from Google Drive"""
+    """List all cover letters from Google Drive - CLEAN VERSION"""
     try:
         cloud_tokens = session.get("cloud_tokens", {})
         google_drive_tokens = cloud_tokens.get("google_drive")
@@ -1008,23 +1006,80 @@ async def list_cover_letters_from_google_drive(
             # Look for cover letter files in Cover_Letters folder
             files = await provider.list_files(folder_name="Cover_Letters")
 
-        # Filter for cover letter files
+        # Process each cover letter file to extract metadata
         cover_letter_files = []
         for file in files:
             if "cover_letter" in file.name.lower() and file.name.endswith(".json"):
-                cover_letter_files.append(
-                    {
-                        "id": file.file_id,
-                        "title": file.name.replace(".json", "")
+                try:
+                    # Load the file content to extract company and job title
+                    async with GoogleDriveProvider(access_token) as provider:
+                        content = await provider.download_file(file.file_id)
+
+                    # Parse the content to get metadata
+                    company_name = "Not specified"
+                    job_title = "Not specified"
+                    title = (
+                        file.name.replace(".json", "")
                         .replace("cover_letter_", "")
                         .replace("_", " ")
-                        .title(),
-                        "name": file.name,
-                        "created_at": file.created_at.isoformat(),
-                        "updated_at": file.last_modified.isoformat(),
-                        "size": file.size_bytes,
-                    }
-                )
+                        .title()
+                    )
+
+                    try:
+                        data = json.loads(content)
+                        cover_letter_data = data.get("cover_letter_data", {})
+
+                        # Extract the actual data
+                        company_name = (
+                            cover_letter_data.get("company_name") or "Not specified"
+                        )
+                        job_title = (
+                            cover_letter_data.get("job_title") or "Not specified"
+                        )
+                        title = cover_letter_data.get("title") or title
+
+                        logger.info(
+                            f"📄 Extracted metadata - Title: {title}, Company: {company_name}, Job: {job_title}"
+                        )
+
+                    except Exception as parse_error:
+                        logger.warning(
+                            f"⚠️ Failed to parse cover letter content for {file.file_id}: {parse_error}"
+                        )
+
+                    cover_letter_files.append(
+                        {
+                            "id": file.file_id,
+                            "title": title,
+                            "company_name": company_name,
+                            "job_title": job_title,
+                            "name": file.name,
+                            "created_at": file.created_at.isoformat(),
+                            "updated_at": file.last_modified.isoformat(),
+                            "size": file.size_bytes,
+                        }
+                    )
+
+                except Exception as file_error:
+                    logger.warning(
+                        f"⚠️ Failed to process cover letter file {file.file_id}: {file_error}"
+                    )
+                    # Add basic metadata if we can't parse the content
+                    cover_letter_files.append(
+                        {
+                            "id": file.file_id,
+                            "title": file.name.replace(".json", "")
+                            .replace("cover_letter_", "")
+                            .replace("_", " ")
+                            .title(),
+                            "company_name": "Not specified",
+                            "job_title": "Not specified",
+                            "name": file.name,
+                            "created_at": file.created_at.isoformat(),
+                            "updated_at": file.last_modified.isoformat(),
+                            "size": file.size_bytes,
+                        }
+                    )
 
         logger.info(f"📋 Found {len(cover_letter_files)} cover letters")
 
@@ -1040,3 +1095,275 @@ async def list_cover_letters_from_google_drive(
         raise HTTPException(
             status_code=500, detail=f"Failed to list cover letters: {str(e)}"
         )
+
+
+@router.get("/cover-letters/{file_id}")
+async def load_cover_letter_clean(
+    file_id: str,
+    session: dict = Depends(get_current_session),
+):
+    """Load a specific cover letter from Google Drive - NO CV SCHEMA VALIDATION"""
+    try:
+        logger.info(f"📥 Loading cover letter: {file_id}")
+
+        cloud_tokens = session.get("cloud_tokens", {})
+        google_drive_tokens = cloud_tokens.get("google_drive")
+
+        if not google_drive_tokens:
+            raise HTTPException(
+                status_code=403, detail="No Google Drive connection found"
+            )
+
+        # Ensure token is valid
+        valid_tokens = await google_drive_service.ensure_valid_token(
+            google_drive_tokens
+        )
+
+        # Update session if tokens were refreshed
+        if valid_tokens != google_drive_tokens:
+            cloud_tokens["google_drive"] = valid_tokens
+            await session_manager.update_session_cloud_tokens(
+                session["session_id"], cloud_tokens
+            )
+
+        access_token = valid_tokens["access_token"]
+
+        # Load cover letter from Google Drive - RAW, no schema validation
+        async with GoogleDriveProvider(access_token) as provider:
+            content = await provider.download_file(file_id)
+
+        logger.info(f"📄 Raw content loaded, length: {len(content)} chars")
+
+        # Parse JSON content without schema validation
+        try:
+            data = json.loads(content)
+            logger.info(f"📋 JSON parsed successfully")
+
+            # Extract cover letter data
+            cover_letter_data = data.get("cover_letter_data", {})
+
+            if not cover_letter_data:
+                # Maybe it's direct cover letter data
+                cover_letter_data = data
+
+            # Structure the response for frontend
+            structured_data = {
+                "id": file_id,
+                "title": cover_letter_data.get("title", "Untitled Cover Letter"),
+                "company_name": cover_letter_data.get("company_name", ""),
+                "job_title": cover_letter_data.get("job_title", ""),
+                "recipient_name": cover_letter_data.get("recipient_name", ""),
+                "recipient_title": cover_letter_data.get("recipient_title", ""),
+                "job_description": cover_letter_data.get("job_description", ""),
+                "cover_letter_content": cover_letter_data.get(
+                    "cover_letter_content", ""
+                ),
+                "applicant_info": cover_letter_data.get("applicant_info", {}),
+                "job_info": cover_letter_data.get("job_info", {}),
+                "is_favorite": cover_letter_data.get("is_favorite", False),
+                "resume_id": cover_letter_data.get("resume_id"),
+                "created_at": cover_letter_data.get(
+                    "created_at", datetime.utcnow().isoformat()
+                ),
+                "updated_at": cover_letter_data.get(
+                    "updated_at", datetime.utcnow().isoformat()
+                ),
+                # Add author info for display
+                "author_name": cover_letter_data.get("applicant_info", {}).get(
+                    "name", ""
+                ),
+                "author_email": cover_letter_data.get("applicant_info", {}).get(
+                    "email", ""
+                ),
+                "author_phone": cover_letter_data.get("applicant_info", {}).get(
+                    "phone", ""
+                ),
+            }
+
+            logger.info(
+                f"✅ Cover letter structured successfully: {structured_data['title']}"
+            )
+
+        except json.JSONDecodeError as e:
+            logger.error(f"❌ Failed to parse cover letter JSON: {e}")
+            raise HTTPException(status_code=400, detail="Invalid cover letter format")
+
+        # Record activity
+        await record_session_activity(
+            session["session_id"],
+            "cover_letter_loaded",
+            {"provider": "google_drive", "file_id": file_id},
+        )
+
+        return {
+            "success": True,
+            "provider": "google_drive",
+            "cover_letter_data": structured_data,
+        }
+
+    except GoogleDriveError as e:
+        logger.error(f"❌ Google Drive load failed: {str(e)}")
+        raise HTTPException(status_code=502, detail=f"Google Drive error: {str(e)}")
+    except Exception as e:
+        logger.error(f"❌ Cover letter load failed: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to load cover letter: {str(e)}"
+        )
+
+
+@router.delete("/cover-letters/{file_id}")
+async def delete_cover_letter_clean(
+    file_id: str,
+    session: dict = Depends(get_current_session),
+):
+    """Delete a cover letter from Google Drive - CLEAN VERSION"""
+    try:
+        logger.info(f"🗑️ Deleting cover letter: {file_id}")
+
+        cloud_tokens = session.get("cloud_tokens", {})
+        google_drive_tokens = cloud_tokens.get("google_drive")
+
+        if not google_drive_tokens:
+            raise HTTPException(
+                status_code=403, detail="No Google Drive connection found"
+            )
+
+        # Ensure token is valid
+        valid_tokens = await google_drive_service.ensure_valid_token(
+            google_drive_tokens
+        )
+
+        # Update session if tokens were refreshed
+        if valid_tokens != google_drive_tokens:
+            cloud_tokens["google_drive"] = valid_tokens
+            await session_manager.update_session_cloud_tokens(
+                session["session_id"], cloud_tokens
+            )
+
+        access_token = valid_tokens["access_token"]
+
+        # Delete cover letter from Google Drive
+        async with GoogleDriveProvider(access_token) as provider:
+            success = await provider.delete_file(file_id)
+
+        if not success:
+            raise HTTPException(
+                status_code=404, detail="Cover letter not found or could not be deleted"
+            )
+
+        logger.info(f"✅ Cover letter deleted successfully: {file_id}")
+
+        # Record activity
+        await record_session_activity(
+            session["session_id"],
+            "cover_letter_deleted",
+            {"provider": "google_drive", "file_id": file_id},
+        )
+
+        return {
+            "success": True,
+            "message": "Cover letter deleted successfully",
+            "provider": "google_drive",
+            "file_id": file_id,
+        }
+
+    except GoogleDriveError as e:
+        logger.error(f"❌ Google Drive delete failed: {str(e)}")
+        raise HTTPException(status_code=502, detail=f"Google Drive error: {str(e)}")
+    except Exception as e:
+        logger.error(f"❌ Cover letter delete failed: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to delete cover letter: {str(e)}"
+        )
+
+
+@router.put("/cover-letters/{file_id}")
+async def update_cover_letter_clean(
+    file_id: str,
+    cover_letter_data: dict,
+    session: dict = Depends(get_current_session),
+):
+    """Update an existing cover letter in Google Drive - CLEAN VERSION"""
+    try:
+        logger.info(f"🔄 Updating cover letter in Google Drive: {file_id}")
+
+        cloud_tokens = session.get("cloud_tokens", {})
+        google_drive_tokens = cloud_tokens.get("google_drive")
+
+        if not google_drive_tokens:
+            return {
+                "success": False,
+                "error": "No Google Drive connection found",
+                "provider": "google_drive",
+            }
+
+        # Ensure token is valid
+        valid_tokens = await google_drive_service.ensure_valid_token(
+            google_drive_tokens
+        )
+
+        # Update session if tokens were refreshed
+        if valid_tokens != google_drive_tokens:
+            cloud_tokens["google_drive"] = valid_tokens
+            await session_manager.update_session_cloud_tokens(
+                session["session_id"], cloud_tokens
+            )
+
+        # Prepare updated cover letter data
+        updated_data = {
+            "metadata": {
+                "version": "1.0",
+                "created_at": datetime.utcnow().isoformat(),
+                "last_modified": datetime.utcnow().isoformat(),
+                "created_with": "cv-privacy-platform",
+                "type": "cover_letter",
+            },
+            "cover_letter_data": {
+                **cover_letter_data,
+                "updated_at": datetime.utcnow().isoformat(),
+            },
+        }
+
+        # Convert to JSON
+        content = json.dumps(updated_data, indent=2, default=str)
+
+        access_token = valid_tokens["access_token"]
+
+        # Update file in Google Drive
+        async with GoogleDriveProvider(access_token) as provider:
+            success = await provider.update_file(file_id, content)
+
+        if success:
+            logger.info(f"✅ Cover letter updated successfully: {file_id}")
+
+            # Record activity
+            await record_session_activity(
+                session["session_id"],
+                "cover_letter_updated",
+                {
+                    "provider": "google_drive",
+                    "file_id": file_id,
+                    "title": cover_letter_data.get("title"),
+                },
+            )
+
+            return {
+                "success": True,
+                "file_id": file_id,
+                "message": "Cover letter updated successfully",
+                "provider": "google_drive",
+            }
+        else:
+            return {
+                "success": False,
+                "error": "Failed to update cover letter",
+                "provider": "google_drive",
+            }
+
+    except Exception as e:
+        logger.error(f"❌ Update cover letter failed: {str(e)}")
+        return {
+            "success": False,
+            "error": f"Failed to update cover letter: {str(e)}",
+            "provider": "google_drive",
+        }
