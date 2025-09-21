@@ -106,16 +106,230 @@ class OneDriveProvider:
             logger.error(f"❌ Connection test failed: {e}")
             return {"success": False, "error": str(e)}
 
+        # app/cloud/onedrive.py - FIXED list_files method
+
+    async def list_files(self, folder_name: str = "CVs") -> List[CloudFileMetadata]:
+        """List CV files in OneDrive folder - ROBUST VERSION"""
+        try:
+            logger.info(f"🔍 Listing files from OneDrive folder: {folder_name}")
+
+            # METHOD 1: Try path-based approach first (more reliable)
+            try:
+                logger.info("🔄 Attempting path-based listing...")
+                url = f"{self.api_base}/me/drive/root:/{folder_name}:/children"
+                params = {
+                    "$filter": "file ne null and endswith(name,'.json')",
+                    "$orderby": "lastModifiedDateTime desc",
+                }
+
+                result = await self._make_request("GET", url, params=params)
+
+                if result.get("value") is not None:
+                    files = []
+                    for file_data in result.get("value", []):
+                        try:
+                            # Skip folders, only process files
+                            if file_data.get("folder"):
+                                continue
+
+                            # Only include JSON files for CVs
+                            if not file_data["name"].endswith(".json"):
+                                continue
+
+                            files.append(
+                                CloudFileMetadata(
+                                    file_id=file_data["id"],
+                                    name=file_data["name"],
+                                    provider=CloudProvider.ONEDRIVE,
+                                    created_at=datetime.fromisoformat(
+                                        file_data["createdDateTime"].replace(
+                                            "Z", "+00:00"
+                                        )
+                                    ),
+                                    last_modified=datetime.fromisoformat(
+                                        file_data["lastModifiedDateTime"].replace(
+                                            "Z", "+00:00"
+                                        )
+                                    ),
+                                    size_bytes=file_data.get("size", 0),
+                                )
+                            )
+                        except Exception as e:
+                            logger.warning(f"⚠️ Failed to parse file data: {e}")
+                            continue
+
+                    logger.info(f"✅ Found {len(files)} files using path-based access")
+                    return files
+
+            except Exception as path_error:
+                logger.warning(f"⚠️ Path-based listing failed: {path_error}")
+                # Fall through to METHOD 2
+
+            # METHOD 2: Try folder ID approach as fallback
+            try:
+                logger.info("🔄 Attempting folder ID-based listing...")
+
+                # Get fresh folder ID
+                folder_id = await self._get_or_create_folder(folder_name)
+                logger.info(f"📁 Got folder ID: {folder_id}")
+
+                # IMMEDIATELY verify the folder ID is valid before using it
+                verification_url = f"{self.api_base}/me/drive/items/{folder_id}"
+                try:
+                    verification_result = await self._make_request(
+                        "GET", verification_url
+                    )
+                    if not verification_result.get("folder"):
+                        raise OneDriveError(
+                            "Folder ID verification failed - not a folder"
+                        )
+                    logger.info("✅ Folder ID verified successfully")
+                except Exception as verify_error:
+                    logger.error(f"❌ Folder ID verification failed: {verify_error}")
+                    raise OneDriveError(f"Invalid folder ID: {folder_id}")
+
+                # Now use the verified folder ID
+                url = f"{self.api_base}/me/drive/items/{folder_id}/children"
+                params = {
+                    "$filter": "file ne null and endswith(name,'.json')",
+                    "$orderby": "lastModifiedDateTime desc",
+                }
+
+                result = await self._make_request("GET", url, params=params)
+
+                files = []
+                for file_data in result.get("value", []):
+                    try:
+                        # Skip folders, only process files
+                        if file_data.get("folder"):
+                            continue
+
+                        # Only include JSON files for CVs
+                        if not file_data["name"].endswith(".json"):
+                            continue
+
+                        files.append(
+                            CloudFileMetadata(
+                                file_id=file_data["id"],
+                                name=file_data["name"],
+                                provider=CloudProvider.ONEDRIVE,
+                                created_at=datetime.fromisoformat(
+                                    file_data["createdDateTime"].replace("Z", "+00:00")
+                                ),
+                                last_modified=datetime.fromisoformat(
+                                    file_data["lastModifiedDateTime"].replace(
+                                        "Z", "+00:00"
+                                    )
+                                ),
+                                size_bytes=file_data.get("size", 0),
+                            )
+                        )
+                    except Exception as e:
+                        logger.warning(f"⚠️ Failed to parse file data: {e}")
+                        continue
+
+                logger.info(f"✅ Found {len(files)} files using folder ID access")
+                return files
+
+            except Exception as folder_id_error:
+                logger.warning(f"⚠️ Folder ID-based listing failed: {folder_id_error}")
+                # Fall through to METHOD 3
+
+            # METHOD 3: Search approach as final fallback
+            try:
+                logger.info("🔄 Attempting search-based listing...")
+
+                search_url = f"{self.api_base}/me/drive/root/search(q='.json')"
+                result = await self._make_request("GET", search_url)
+
+                files = []
+                for file_data in result.get("value", []):
+                    try:
+                        # Check if file is in the correct folder
+                        parent_path = file_data.get("parentReference", {}).get(
+                            "path", ""
+                        )
+                        if (
+                            f"/{folder_name}" not in parent_path
+                            and f"{folder_name}" not in parent_path
+                        ):
+                            continue
+
+                        # Skip folders, only process files
+                        if file_data.get("folder"):
+                            continue
+
+                        # Only include JSON files for CVs
+                        if not file_data["name"].endswith(".json"):
+                            continue
+
+                        files.append(
+                            CloudFileMetadata(
+                                file_id=file_data["id"],
+                                name=file_data["name"],
+                                provider=CloudProvider.ONEDRIVE,
+                                created_at=datetime.fromisoformat(
+                                    file_data["createdDateTime"].replace("Z", "+00:00")
+                                ),
+                                last_modified=datetime.fromisoformat(
+                                    file_data["lastModifiedDateTime"].replace(
+                                        "Z", "+00:00"
+                                    )
+                                ),
+                                size_bytes=file_data.get("size", 0),
+                            )
+                        )
+                    except Exception as e:
+                        logger.warning(f"⚠️ Failed to parse file data: {e}")
+                        continue
+
+                logger.info(f"✅ Found {len(files)} files using search-based access")
+                return files
+
+            except Exception as search_error:
+                logger.error(
+                    f"❌ All listing methods failed. Search error: {search_error}"
+                )
+
+            # If all methods fail, return empty list
+            logger.info(f"📁 No files found in folder: {folder_name}")
+            return []
+
+        except Exception as e:
+            logger.error(f"❌ List files failed: {e}")
+            # For 404 errors or folder not found, return empty list instead of raising
+            if "404" in str(e) or "itemNotFound" in str(e):
+                logger.info(f"📁 Folder not found, returning empty list: {folder_name}")
+                return []
+            raise OneDriveError(f"Failed to list files: {e}")
+
     async def _get_or_create_folder(self, folder_name: str = "CVs") -> str:
-        """Get or create CV folder in OneDrive - FIXED VERSION"""
+        """Get or create CV folder in OneDrive - ENHANCED VERSION"""
         logger.info(f"🔍 Looking for folder: {folder_name}")
 
         try:
-            # Method 1: Search for folder using search endpoint (more reliable)
+            # METHOD 1: Try path-based check first (most reliable)
+            try:
+                logger.info("🔄 Checking folder via path...")
+                path_url = f"{self.api_base}/me/drive/root:/{folder_name}"
+                result = await self._make_request("GET", path_url)
+
+                if result.get("folder") and result.get("id"):
+                    folder_id = result["id"]
+                    logger.info(f"✅ Found folder via path: {folder_id}")
+                    return folder_id
+
+            except Exception as path_error:
+                if "itemNotFound" not in str(path_error):
+                    logger.warning(f"⚠️ Path check failed: {path_error}")
+                # Continue to other methods
+
+            # METHOD 2: Search for folder
+            logger.info("🔄 Searching for folder...")
             search_url = f"{self.api_base}/me/drive/root/search(q='{folder_name}')"
             result = await self._make_request("GET", search_url)
 
-            # Check if we found our folder
+            # Check if we found our folder in root
             if result.get("value"):
                 for item in result["value"]:
                     if (
@@ -128,9 +342,12 @@ class OneDriveProvider:
                         logger.info(f"✅ Found existing folder via search: {folder_id}")
                         return folder_id
 
-            # Method 2: List children and filter manually
+            # METHOD 3: List children and filter manually
+            logger.info("🔄 Listing root children...")
             children_url = f"{self.api_base}/me/drive/root/children"
-            result = await self._make_request("GET", children_url)
+            params = {"$filter": f"name eq '{folder_name}' and folder ne null"}
+
+            result = await self._make_request("GET", children_url, params=params)
 
             if result.get("value"):
                 for item in result["value"]:
@@ -139,12 +356,12 @@ class OneDriveProvider:
                         logger.info(f"✅ Found existing folder in root: {folder_id}")
                         return folder_id
 
-            # Method 3: If folder doesn't exist, create it
+            # METHOD 4: If folder doesn't exist, create it
             logger.info(f"📁 Creating new folder: {folder_name}")
             create_data = {
                 "name": folder_name,
                 "folder": {},
-                "@microsoft.graph.conflictBehavior": "fail",  # Fail if exists rather than rename
+                "@microsoft.graph.conflictBehavior": "fail",
             }
 
             create_url = f"{self.api_base}/me/drive/root/children"
@@ -155,95 +372,25 @@ class OneDriveProvider:
 
         except Exception as e:
             logger.error(f"❌ Folder operation failed: {e}")
-            # If creation fails due to conflict, try to find it again
+            # If creation fails due to conflict, try to find it one more time
             if "nameAlreadyExists" in str(e) or "itemAlreadyExists" in str(e):
-                logger.info("🔄 Folder might already exist, trying to find it...")
-                # Retry finding the folder
-                children_url = f"{self.api_base}/me/drive/root/children"
-                result = await self._make_request("GET", children_url)
+                logger.info("🔄 Folder might already exist, final search attempt...")
+                try:
+                    children_url = f"{self.api_base}/me/drive/root/children"
+                    result = await self._make_request("GET", children_url)
 
-                if result.get("value"):
-                    for item in result["value"]:
-                        if item.get("name") == folder_name and item.get("folder"):
-                            folder_id = item["id"]
-                            logger.info(f"✅ Found folder after conflict: {folder_id}")
-                            return folder_id
+                    if result.get("value"):
+                        for item in result["value"]:
+                            if item.get("name") == folder_name and item.get("folder"):
+                                folder_id = item["id"]
+                                logger.info(
+                                    f"✅ Found folder after conflict: {folder_id}"
+                                )
+                                return folder_id
+                except Exception as final_error:
+                    logger.error(f"❌ Final search failed: {final_error}")
 
             raise OneDriveError(f"Failed to get/create folder: {e}")
-
-    async def verify_folder_id(self, folder_id: str) -> bool:
-        """Verify if a folder ID is valid and accessible"""
-        try:
-            url = f"{self.api_base}/me/drive/items/{folder_id}"
-            result = await self._make_request("GET", url)
-            return result.get("folder") is not None
-        except Exception:
-            return False
-
-    async def list_files(self, folder_name: str = "CVs") -> List[CloudFileMetadata]:
-        """List CV files in OneDrive folder - FIXED VERSION"""
-        try:
-            # First get the folder ID
-            folder_id = await self._get_or_create_folder(folder_name)
-            logger.info(f"✅ Using folder ID for listing: {folder_id}")
-
-            # Verify the folder ID is valid
-            if not await self.verify_folder_id(folder_id):
-                logger.warning(
-                    f"⚠️ Folder ID {folder_id} is invalid, recreating folder..."
-                )
-                # If invalid, try to recreate the folder
-                folder_id = await self._get_or_create_folder(folder_name)
-                logger.info(f"✅ Using new folder ID: {folder_id}")
-
-            # Use folder ID based API call
-            url = f"{self.api_base}/me/drive/items/{folder_id}/children"
-            params = {
-                "$filter": "file ne null",  # Only get files, not folders
-                "$orderby": "lastModifiedDateTime desc",
-            }
-
-            result = await self._make_request("GET", url, params=params)
-
-            files = []
-            for file_data in result.get("value", []):
-                try:
-                    # Skip folders, only process files
-                    if file_data.get("folder"):
-                        continue
-
-                    # Only include JSON files for CVs
-                    if not file_data["name"].endswith(".json"):
-                        continue
-
-                    files.append(
-                        CloudFileMetadata(
-                            file_id=file_data["id"],
-                            name=file_data["name"],
-                            provider=CloudProvider.ONEDRIVE,
-                            created_at=datetime.fromisoformat(
-                                file_data["createdDateTime"].replace("Z", "+00:00")
-                            ),
-                            last_modified=datetime.fromisoformat(
-                                file_data["lastModifiedDateTime"].replace("Z", "+00:00")
-                            ),
-                            size_bytes=file_data.get("size", 0),
-                        )
-                    )
-                except Exception as e:
-                    logger.warning(f"⚠️ Failed to parse file data: {e}")
-                    continue
-
-            logger.info(f"✅ Found {len(files)} files using folder ID access")
-            return files
-
-        except Exception as e:
-            logger.error(f"❌ List files failed: {e}")
-            # For 404 errors, try to recreate the folder on next attempt
-            if "404" in str(e) or "itemNotFound" in str(e):
-                logger.info(f"📁 Folder not found, returning empty list: {folder_name}")
-                return []  # Return empty list for not found folder
-            raise OneDriveError(f"Failed to list files: {e}")
 
     async def upload_file(
         self, file_name: str, content: str, folder_name: str = "CVs"
