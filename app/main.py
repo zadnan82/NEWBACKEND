@@ -23,7 +23,14 @@ from app.database import (
     check_database_connection,
     initialize_pricing_tiers,
 )
-from app.api import google_drive_api, resume, cloud, ai_enhance, cover_letter
+from app.api import (
+    google_drive_api,
+    onedrive_api,
+    resume,
+    cloud,
+    ai_enhance,
+    cover_letter,
+)
 
 # FIXED: Correct import of session functions - at module level, not in function
 from app.auth.sessions import (
@@ -248,6 +255,7 @@ app.include_router(
 app.include_router(
     google_drive_api.router, prefix="/api/google-drive", tags=["google-drive"]
 )
+app.include_router(onedrive_api.router, prefix="/api/onedrive", tags=["OneDrive"])
 
 
 # Startup and shutdown events
@@ -345,7 +353,10 @@ async def api_info():
             },
             "multi_cloud": {
                 "description": "Support for multiple cloud providers",
-                "providers": ["Google Drive", "OneDrive", "Dropbox", "Box"],
+                "providers": {
+                    "supported": ["Google Drive", "Microsoft OneDrive"],
+                    "coming_soon": ["Dropbox", "Box"],
+                },
             },
             "ai_powered": {
                 "description": "AI-enhanced CV improvement and cover letter generation",
@@ -356,24 +367,19 @@ async def api_info():
                 "session_duration": f"{settings.session_expire_hours} hours",
             },
         },
-        "pricing": {
-            "free": {"ai_operations_daily": 6, "cloud_providers": 1, "price": "$0"},
-            "pro": {
-                "ai_operations_daily": 50,
-                "cloud_providers": 4,
-                "price": "$9.99/month",
-            },
-            "business": {
-                "ai_operations_daily": 200,
-                "api_access": True,
-                "price": "$29.99/month",
-            },
-        },
         "endpoints": {
             "cloud_management": "/api/cloud/*",
             "resume_operations": "/api/resume/*",
             "ai_enhancement": "/api/ai/*",
             "cover_letters": "/api/cover-letter/*",
+            "google_drive": "/api/google-drive/*",
+            "onedrive": "/api/onedrive/*",
+        },
+        "provider_status": {
+            "google_drive": "fully_implemented",
+            "onedrive": "fully_implemented",
+            "dropbox": "planned",
+            "box": "planned",
         },
     }
 

@@ -47,7 +47,7 @@ class Settings(BaseSettings):
     microsoft_client_id: str = os.getenv("MICROSOFT_CLIENT_ID", "")
     microsoft_client_secret: str = os.getenv("MICROSOFT_CLIENT_SECRET", "")
     microsoft_redirect_uri: str = os.getenv(
-        "MICROSOFT_REDIRECT_URI", "http://localhost:8000/auth/microsoft/callback"
+        "MICROSOFT_REDIRECT_URI", "http://localhost:5173/cloud/callback/onedrive"
     )
 
     # Dropbox OAuth
@@ -129,25 +129,51 @@ class Settings(BaseSettings):
         """Validate OAuth configuration and return available providers"""
         providers = {}
 
+        # Google Drive validation
         if self.google_client_id and self.google_client_secret:
-            providers["google_drive"] = True
+            providers["google_drive"] = {
+                "enabled": True,
+                "client_id": self.google_client_id[:10]
+                + "...",  # Show partial for debugging
+                "redirect_uri": self.google_redirect_uri,
+            }
         else:
-            providers["google_drive"] = False
+            providers["google_drive"] = {
+                "enabled": False,
+                "error": "Missing GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET",
+            }
 
+        # OneDrive validation
         if self.microsoft_client_id and self.microsoft_client_secret:
-            providers["onedrive"] = True
+            providers["onedrive"] = {
+                "enabled": True,
+                "client_id": self.microsoft_client_id[:10]
+                + "...",  # Show partial for debugging
+                "redirect_uri": self.microsoft_redirect_uri,
+            }
         else:
-            providers["onedrive"] = False
+            providers["onedrive"] = {
+                "enabled": False,
+                "error": "Missing MICROSOFT_CLIENT_ID or MICROSOFT_CLIENT_SECRET",
+            }
 
+        # Dropbox validation
         if self.dropbox_app_key and self.dropbox_app_secret:
-            providers["dropbox"] = True
+            providers["dropbox"] = {"enabled": True, "status": "Not yet implemented"}
         else:
-            providers["dropbox"] = False
+            providers["dropbox"] = {
+                "enabled": False,
+                "error": "Missing DROPBOX_APP_KEY or DROPBOX_APP_SECRET",
+            }
 
+        # Box validation
         if self.box_client_id and self.box_client_secret:
-            providers["box"] = True
+            providers["box"] = {"enabled": True, "status": "Not yet implemented"}
         else:
-            providers["box"] = False
+            providers["box"] = {
+                "enabled": False,
+                "error": "Missing BOX_CLIENT_ID or BOX_CLIENT_SECRET",
+            }
 
         return providers
 
@@ -230,10 +256,11 @@ class CloudConfig:
         },
         "onedrive": {
             "name": "Microsoft OneDrive",
-            "scopes": ["Files.ReadWrite"],
+            "scopes": ["Files.ReadWrite", "offline_access"],
             "api_base": "https://graph.microsoft.com/v1.0",
             "auth_url": "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
             "token_url": "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+            "revoke_url": "https://login.microsoftonline.com/common/oauth2/v2.0/logout",
         },
         "dropbox": {
             "name": "Dropbox",

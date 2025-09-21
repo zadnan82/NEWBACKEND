@@ -53,6 +53,8 @@ async def list_available_providers():
                 "description": "Store your CVs in Google Drive",
                 "logo_url": "/static/logos/google-drive.png",
                 "supported_features": ["read", "write", "delete", "folders"],
+                "status": "fully_supported",
+                "implementation": "complete",
             },
             {
                 "id": "onedrive",
@@ -60,6 +62,8 @@ async def list_available_providers():
                 "description": "Store your CVs in OneDrive",
                 "logo_url": "/static/logos/onedrive.png",
                 "supported_features": ["read", "write", "delete", "folders"],
+                "status": "fully_supported",
+                "implementation": "complete",
             },
             {
                 "id": "dropbox",
@@ -67,6 +71,8 @@ async def list_available_providers():
                 "description": "Store your CVs in Dropbox",
                 "logo_url": "/static/logos/dropbox.png",
                 "supported_features": ["read", "write", "delete", "folders"],
+                "status": "coming_soon",
+                "implementation": "planned",
             },
             {
                 "id": "box",
@@ -74,6 +80,8 @@ async def list_available_providers():
                 "description": "Store your CVs in Box",
                 "logo_url": "/static/logos/box.png",
                 "supported_features": ["read", "write", "delete", "folders"],
+                "status": "coming_soon",
+                "implementation": "planned",
             },
         ]
     }
@@ -351,9 +359,6 @@ async def exchange_google_code_for_tokens(
                 ),  # May be None for refresh calls
                 "expires_at": expires_at.isoformat(),
             }
-
-
-# In app/api/cloud.py - Fix the get_connection_status function
 
 
 @router.get("/status", response_model=List[CloudConnectionStatus])
@@ -977,9 +982,6 @@ async def save_cv_to_cloud(
                 return await resp.json()
 
     raise HTTPException(501, f"Saving not implemented for {provider.value}")
-
-
-# Add this debug endpoint to your app/api/cloud.py to see what's happening
 
 
 @router.get("/debug/status")
