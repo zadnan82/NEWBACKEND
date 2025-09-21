@@ -107,52 +107,99 @@ class OneDriveProvider:
             return {"success": False, "error": str(e)}
 
     async def _get_or_create_folder(self, folder_name: str = "CVs") -> str:
-        """Get or create CV folder in OneDrive"""
+        """Get or create CV folder in OneDrive - FIXED VERSION"""
         logger.info(f"🔍 Looking for folder: {folder_name}")
 
         try:
-            # First, try to get the folder using children endpoint with simpler filter
-            search_url = f"{self.api_base}/me/drive/root/children"
-            params = {
-                "$filter": f"name eq '{folder_name}'"
-            }  # Remove the 'folder ne null' part
+            # Method 1: Search for folder using search endpoint (more reliable)
+            search_url = f"{self.api_base}/me/drive/root/search(q='{folder_name}')"
+            result = await self._make_request("GET", search_url)
 
-            result = await self._make_request("GET", search_url, params=params)
-
-            # Check if we found a folder (not just any item with that name)
+            # Check if we found our folder
             if result.get("value"):
                 for item in result["value"]:
-                    if item.get("folder"):  # This is actually a folder
+                    if (
+                        item.get("name") == folder_name
+                        and item.get("folder")
+                        and item.get("parentReference", {}).get("path")
+                        == "/drive/root:"
+                    ):
                         folder_id = item["id"]
-                        logger.info(f"✅ Found existing folder: {folder_id}")
+                        logger.info(f"✅ Found existing folder via search: {folder_id}")
                         return folder_id
 
-            # If folder doesn't exist, create it
+            # Method 2: List children and filter manually
+            children_url = f"{self.api_base}/me/drive/root/children"
+            result = await self._make_request("GET", children_url)
+
+            if result.get("value"):
+                for item in result["value"]:
+                    if item.get("name") == folder_name and item.get("folder"):
+                        folder_id = item["id"]
+                        logger.info(f"✅ Found existing folder in root: {folder_id}")
+                        return folder_id
+
+            # Method 3: If folder doesn't exist, create it
             logger.info(f"📁 Creating new folder: {folder_name}")
             create_data = {
                 "name": folder_name,
                 "folder": {},
-                "@microsoft.graph.conflictBehavior": "rename",
+                "@microsoft.graph.conflictBehavior": "fail",  # Fail if exists rather than rename
             }
 
-            folder = await self._make_request("POST", search_url, json=create_data)
+            create_url = f"{self.api_base}/me/drive/root/children"
+            folder = await self._make_request("POST", create_url, json=create_data)
             folder_id = folder["id"]
             logger.info(f"✅ Created folder: {folder_id}")
             return folder_id
 
         except Exception as e:
             logger.error(f"❌ Folder operation failed: {e}")
+            # If creation fails due to conflict, try to find it again
+            if "nameAlreadyExists" in str(e) or "itemAlreadyExists" in str(e):
+                logger.info("🔄 Folder might already exist, trying to find it...")
+                # Retry finding the folder
+                children_url = f"{self.api_base}/me/drive/root/children"
+                result = await self._make_request("GET", children_url)
+
+                if result.get("value"):
+                    for item in result["value"]:
+                        if item.get("name") == folder_name and item.get("folder"):
+                            folder_id = item["id"]
+                            logger.info(f"✅ Found folder after conflict: {folder_id}")
+                            return folder_id
+
             raise OneDriveError(f"Failed to get/create folder: {e}")
 
-    async def list_files(self, folder_name: str = "CVs") -> List[CloudFileMetadata]:
-        """List CV files in OneDrive folder"""
+    async def verify_folder_id(self, folder_id: str) -> bool:
+        """Verify if a folder ID is valid and accessible"""
         try:
-            folder_id = await self._get_or_create_folder(folder_name)
-            logger.info(f"📋 Listing files in folder: {folder_id}")
+            url = f"{self.api_base}/me/drive/items/{folder_id}"
+            result = await self._make_request("GET", url)
+            return result.get("folder") is not None
+        except Exception:
+            return False
 
+    async def list_files(self, folder_name: str = "CVs") -> List[CloudFileMetadata]:
+        """List CV files in OneDrive folder - FIXED VERSION"""
+        try:
+            # First get the folder ID
+            folder_id = await self._get_or_create_folder(folder_name)
+            logger.info(f"✅ Using folder ID for listing: {folder_id}")
+
+            # Verify the folder ID is valid
+            if not await self.verify_folder_id(folder_id):
+                logger.warning(
+                    f"⚠️ Folder ID {folder_id} is invalid, recreating folder..."
+                )
+                # If invalid, try to recreate the folder
+                folder_id = await self._get_or_create_folder(folder_name)
+                logger.info(f"✅ Using new folder ID: {folder_id}")
+
+            # Use folder ID based API call
             url = f"{self.api_base}/me/drive/items/{folder_id}/children"
             params = {
-                "$filter": "endswith(name,'.json')",
+                "$filter": "file ne null",  # Only get files, not folders
                 "$orderby": "lastModifiedDateTime desc",
             }
 
@@ -161,6 +208,14 @@ class OneDriveProvider:
             files = []
             for file_data in result.get("value", []):
                 try:
+                    # Skip folders, only process files
+                    if file_data.get("folder"):
+                        continue
+
+                    # Only include JSON files for CVs
+                    if not file_data["name"].endswith(".json"):
+                        continue
+
                     files.append(
                         CloudFileMetadata(
                             file_id=file_data["id"],
@@ -179,11 +234,15 @@ class OneDriveProvider:
                     logger.warning(f"⚠️ Failed to parse file data: {e}")
                     continue
 
-            logger.info(f"✅ Found {len(files)} files")
+            logger.info(f"✅ Found {len(files)} files using folder ID access")
             return files
 
         except Exception as e:
             logger.error(f"❌ List files failed: {e}")
+            # For 404 errors, try to recreate the folder on next attempt
+            if "404" in str(e) or "itemNotFound" in str(e):
+                logger.info(f"📁 Folder not found, returning empty list: {folder_name}")
+                return []  # Return empty list for not found folder
             raise OneDriveError(f"Failed to list files: {e}")
 
     async def upload_file(
