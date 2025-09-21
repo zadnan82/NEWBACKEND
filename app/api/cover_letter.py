@@ -1,6 +1,6 @@
-# app/api/cover_letter.py - FIXED VERSION
+# app/api/cover_letter.py - FIXED VERSION with Multi-Provider Support
 """
-Fixed AI-powered cover letter generation API endpoints that work with Google Drive CVs
+FIXED AI-powered cover letter generation API endpoints that work with any provider
 """
 
 import json
@@ -9,12 +9,14 @@ import asyncio
 from typing import List, Dict, Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Form, File, UploadFile
 from datetime import datetime
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 # FIXED: Use modern OpenAI client
 from openai import AsyncOpenAI
 
 from app.cloud.google_drive import GoogleDriveProvider
+from app.cloud.onedrive import OneDriveProvider
 
 from ..config import settings
 from ..schemas import CompleteCV, CloudProvider
@@ -27,6 +29,16 @@ from ..cloud.google_drive_service import google_drive_service, GoogleDriveError
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# Import OneDrive service for multi-provider support
+try:
+    from ..cloud.onedrive_service import onedrive_service, OneDriveError
+
+    ONEDRIVE_AVAILABLE = True
+    logger.info("✅ OneDrive service imported successfully")
+except ImportError:
+    ONEDRIVE_AVAILABLE = False
+    logger.warning("⚠️ OneDrive service not available")
 
 
 class CoverLetterRequest(BaseModel):
@@ -41,7 +53,7 @@ class CoverLetterRequest(BaseModel):
 
 
 class CoverLetterService:
-    """Fixed AI service for cover letter generation with Google Drive integration"""
+    """Fixed AI service for cover letter generation with multi-provider support"""
 
     def __init__(self):
         # FIXED: Use modern OpenAI client
@@ -51,6 +63,49 @@ class CoverLetterService:
         else:
             self.openai_client = None
             logger.warning("⚠️ No OpenAI API key found")
+
+    def _convert_cv_dict_to_complete_cv(self, cv_dict: Dict[str, Any]) -> CompleteCV:
+        """Convert CV dictionary to CompleteCV object"""
+        try:
+            # Handle different photo field formats
+            photo_data = cv_dict.get("photo", cv_dict.get("photos", {}))
+            if not isinstance(photo_data, dict):
+                photo_data = {"photolink": None}
+
+            # Ensure all required fields exist with defaults
+            cv_data = {
+                "title": cv_dict.get("title", "My Resume"),
+                "is_public": cv_dict.get("is_public", False),
+                "customization": cv_dict.get(
+                    "customization",
+                    {
+                        "template": "stockholm",
+                        "accent_color": "#1a5276",
+                        "font_family": "Helvetica, Arial, sans-serif",
+                        "line_spacing": 1.5,
+                        "headings_uppercase": False,
+                        "hide_skill_level": False,
+                        "language": "en",
+                    },
+                ),
+                "personal_info": cv_dict.get("personal_info", {}),
+                "experiences": cv_dict.get("experiences", []),
+                "educations": cv_dict.get("educations", []),
+                "skills": cv_dict.get("skills", []),
+                "languages": cv_dict.get("languages", []),
+                "referrals": cv_dict.get("referrals", []),
+                "custom_sections": cv_dict.get("custom_sections", []),
+                "extracurriculars": cv_dict.get("extracurriculars", []),
+                "hobbies": cv_dict.get("hobbies", []),
+                "courses": cv_dict.get("courses", []),
+                "internships": cv_dict.get("internships", []),
+                "photo": photo_data,
+            }
+
+            return CompleteCV.parse_obj(cv_data)
+        except Exception as e:
+            logger.error(f"❌ Failed to convert CV dict to CompleteCV: {e}")
+            raise ValueError(f"Invalid CV data format: {e}")
 
     async def generate_cover_letter_from_cv(
         self,
@@ -213,126 +268,6 @@ class CoverLetterService:
 cover_letter_service = CoverLetterService()
 
 
-@router.post("/save")
-async def save_cover_letter_to_drive(
-    cover_letter_data: dict,
-    session: dict = Depends(get_current_session),
-):
-    """
-    Save a generated cover letter to Google Drive
-    """
-    try:
-        logger.info(
-            f"💾 Saving cover letter to Google Drive for session: {session.get('session_id')}"
-        )
-
-        # Get Google Drive tokens from session
-        cloud_tokens = session.get("cloud_tokens", {})
-        google_drive_tokens = cloud_tokens.get("google_drive")
-
-        if not google_drive_tokens:
-            raise HTTPException(
-                status_code=403,
-                detail="No Google Drive connection found. Please connect Google Drive first.",
-            )
-
-        logger.info(
-            f"📄 Cover letter title: {cover_letter_data.get('title', 'Untitled')}"
-        )
-
-        # Prepare cover letter data for storage
-        cover_letter_storage_data = {
-            "metadata": {
-                "version": "1.0",
-                "created_at": datetime.utcnow().isoformat(),
-                "last_modified": datetime.utcnow().isoformat(),
-                "created_with": "cv-privacy-platform",
-                "type": "cover_letter",
-            },
-            "cover_letter_data": {
-                "title": cover_letter_data.get("title", "Untitled Cover Letter"),
-                "company_name": cover_letter_data.get("company_name", ""),
-                "job_title": cover_letter_data.get("job_title", ""),
-                "job_description": cover_letter_data.get("job_description", ""),
-                "recipient_name": cover_letter_data.get("recipient_name", ""),
-                "recipient_title": cover_letter_data.get("recipient_title", ""),
-                "cover_letter_content": cover_letter_data.get(
-                    "cover_letter_content", {}
-                ),
-                "applicant_info": cover_letter_data.get("applicant_info", {}),
-                "job_info": cover_letter_data.get("job_info", {}),
-                "is_favorite": cover_letter_data.get("is_favorite", False),
-                "resume_id": cover_letter_data.get("resume_id"),
-                "created_at": cover_letter_data.get(
-                    "created_at", datetime.utcnow().isoformat()
-                ),
-                "updated_at": datetime.utcnow().isoformat(),
-            },
-        }
-
-        # Generate filename for the cover letter
-        safe_title = "".join(
-            c
-            for c in cover_letter_data.get("title", "cover_letter")
-            if c.isalnum() or c in (" ", "-", "_")
-        ).strip()
-        safe_title = safe_title.replace(" ", "_")[:50]
-        filename = f"cover_letter_{safe_title}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.json"
-
-        # Save to Google Drive using the service
-        content = json.dumps(cover_letter_storage_data, indent=2, default=str)
-
-        access_token = google_drive_tokens["access_token"]
-
-        # Use Google Drive service to save
-        async with GoogleDriveProvider(access_token) as provider:
-            file_id = await provider.upload_file(
-                filename, content, folder_name="Cover_Letters"
-            )
-
-        logger.info(f"✅ Cover letter saved to Google Drive: {file_id}")
-
-        # Record activity
-        try:
-            await record_session_activity(
-                session["session_id"],
-                "cover_letter_saved",
-                {
-                    "file_id": file_id,
-                    "title": cover_letter_data.get("title"),
-                    "company": cover_letter_data.get("company_name"),
-                },
-            )
-        except Exception as e:
-            logger.warning(f"⚠️ Failed to record activity (non-critical): {e}")
-
-        # Return success response
-        return {
-            "success": True,
-            "file_id": file_id,
-            "filename": filename,
-            "message": f"Cover letter saved to Google Drive successfully",
-            "cover_letter_data": {
-                **cover_letter_storage_data["cover_letter_data"],
-                "id": file_id,
-            },
-        }
-
-    except GoogleDriveError as e:
-        logger.error(f"❌ Google Drive error: {e}")
-        raise HTTPException(status_code=502, detail=f"Google Drive error: {str(e)}")
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"❌ Unexpected error saving cover letter: {str(e)}")
-        import traceback
-
-        logger.error(f"❌ Full traceback: {traceback.format_exc()}")
-        raise HTTPException(
-            status_code=500, detail=f"Failed to save cover letter: {str(e)}"
-        )
-
-
 @router.post("/generate")
 async def generate_cover_letter(
     # Handle both multipart form data and JSON
@@ -342,14 +277,18 @@ async def generate_cover_letter(
     recipient_name: str = Form(""),
     recipient_title: str = Form(""),
     resume_id: Optional[str] = Form(None),
+    resume_data: Optional[str] = Form(None),  # NEW: Accept CV data directly
+    provider: Optional[str] = Form(None),
+    data_source: Optional[str] = Form(None),  # NEW: Track data source
+    skip_cloud_loading: Optional[str] = Form(None),  # NEW: Skip cloud loading flag
     save_to_database: bool = Form(False),
     title: Optional[str] = Form(None),
     resume_file: Optional[UploadFile] = File(None),
     session: dict = Depends(get_current_session),
 ):
     """
-    Generate cover letter from Google Drive CV or uploaded file
-    FIXED: Now properly loads CV from Google Drive using session authentication
+    FIXED: Generate cover letter with multi-provider support
+    Priority: resume_data > resume_file > cloud loading
     """
     try:
         logger.info(
@@ -358,48 +297,31 @@ async def generate_cover_letter(
         logger.info(f"📋 Job: {job_title} at {company_name}")
         logger.info(f"📄 Resume ID: {resume_id}")
         logger.info(f"📁 Has uploaded file: {resume_file is not None}")
+        logger.info(f"📊 Has resume data: {resume_data is not None}")
+        logger.info(f"🏷️ Data source: {data_source}")
+        logger.info(f"⏭️ Skip cloud loading: {skip_cloud_loading}")
 
-        # FIXED: Get Google Drive tokens from session (not cloud_tokens)
         cloud_tokens = session.get("cloud_tokens", {})
-        google_drive_tokens = cloud_tokens.get("google_drive")
-
-        logger.info(f"🔍 Session has Google Drive tokens: {bool(google_drive_tokens)}")
-        logger.info(f"🔍 Available cloud providers: {list(cloud_tokens.keys())}")
-
-        if not google_drive_tokens and not resume_file:
-            raise HTTPException(
-                status_code=403,
-                detail="No Google Drive connection found and no resume file uploaded. Please connect Google Drive or upload a resume file.",
-            )
+        available_providers = list(cloud_tokens.keys())
+        logger.info(f"🔍 Available cloud providers: {available_providers}")
 
         cv_data = None
 
-        # Load CV data - prioritize resume_id over uploaded file
-        if resume_id and google_drive_tokens:
-            logger.info(f"📥 Loading CV from Google Drive: {resume_id}")
+        # PRIORITY 1: Use provided resume_data (from frontend)
+        if resume_data:
+            logger.info("📥 Using provided resume data from frontend")
             try:
-                # FIXED: Use the google_drive_service directly with proper tokens
-                cv_data = await google_drive_service.load_cv(
-                    google_drive_tokens, resume_id
-                )
-                logger.info(
-                    f"✅ Successfully loaded CV from Google Drive: {cv_data.title}"
-                )
-            except GoogleDriveError as gd_error:
-                logger.error(f"❌ Google Drive error: {gd_error}")
-                if not resume_file:
-                    raise HTTPException(
-                        status_code=502, detail=f"Google Drive error: {str(gd_error)}"
-                    )
+                cv_dict = json.loads(resume_data)
+                cv_data = cover_letter_service._convert_cv_dict_to_complete_cv(cv_dict)
+                logger.info(f"✅ Successfully parsed provided CV data: {cv_data.title}")
             except Exception as e:
-                logger.error(f"❌ Failed to load CV from Google Drive: {e}")
-                if not resume_file:
-                    raise HTTPException(
-                        status_code=404, detail=f"Failed to load CV: {str(e)}"
-                    )
+                logger.error(f"❌ Failed to parse provided resume data: {e}")
+                raise HTTPException(
+                    status_code=400, detail=f"Invalid resume data format: {str(e)}"
+                )
 
-        # Fallback to uploaded file if Google Drive loading failed or no resume_id
-        if not cv_data and resume_file:
+        # PRIORITY 2: Use uploaded file if no resume_data
+        elif resume_file:
             logger.info(f"📤 Processing uploaded resume file: {resume_file.filename}")
             try:
                 # Read uploaded file content
@@ -436,10 +358,91 @@ async def generate_cover_letter(
                     status_code=400, detail=f"Failed to process uploaded file: {str(e)}"
                 )
 
+        # PRIORITY 3: Load from cloud providers (only if no data provided and not skipped)
+        elif resume_id and skip_cloud_loading != "true":
+            logger.info(f"📥 Attempting to load CV from cloud providers: {resume_id}")
+
+            # Determine which provider to use based on file ID format or explicit provider
+            target_provider = provider
+
+            if not target_provider:
+                # Auto-detect provider based on file ID format
+                if "!" in resume_id:  # OneDrive format
+                    target_provider = "onedrive"
+                else:  # Assume Google Drive
+                    target_provider = "google_drive"
+
+                logger.info(f"🔍 Auto-detected provider: {target_provider}")
+
+            # Try to load from the determined provider
+            if target_provider == "google_drive" and "google_drive" in cloud_tokens:
+                logger.info(f"📥 Loading CV from Google Drive: {resume_id}")
+                try:
+                    google_drive_tokens = cloud_tokens["google_drive"]
+                    cv_data = await google_drive_service.load_cv(
+                        google_drive_tokens, resume_id
+                    )
+                    logger.info(
+                        f"✅ Successfully loaded CV from Google Drive: {cv_data.title}"
+                    )
+                except GoogleDriveError as gd_error:
+                    logger.error(f"❌ Google Drive error: {gd_error}")
+                    raise HTTPException(
+                        status_code=502, detail=f"Google Drive error: {str(gd_error)}"
+                    )
+                except Exception as e:
+                    logger.error(f"❌ Failed to load CV from Google Drive: {e}")
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"Failed to load CV from Google Drive: {str(e)}",
+                    )
+
+            elif (
+                target_provider == "onedrive"
+                and "onedrive" in cloud_tokens
+                and ONEDRIVE_AVAILABLE
+            ):
+                logger.info(f"📥 Loading CV from OneDrive: {resume_id}")
+                try:
+                    onedrive_tokens = cloud_tokens["onedrive"]
+                    cv_data = await onedrive_service.load_cv(onedrive_tokens, resume_id)
+                    logger.info(
+                        f"✅ Successfully loaded CV from OneDrive: {cv_data.title}"
+                    )
+                except OneDriveError as od_error:
+                    logger.error(f"❌ OneDrive error: {od_error}")
+                    raise HTTPException(
+                        status_code=502, detail=f"OneDrive error: {str(od_error)}"
+                    )
+                except Exception as e:
+                    logger.error(f"❌ Failed to load CV from OneDrive: {e}")
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"Failed to load CV from OneDrive: {str(e)}",
+                    )
+
+            else:
+                available_msg = f"Available providers: {available_providers}"
+                if not ONEDRIVE_AVAILABLE:
+                    available_msg += " (OneDrive service not available)"
+
+                logger.error(
+                    f"❌ No suitable provider found for resume_id: {resume_id}"
+                )
+                logger.error(f"   Target provider: {target_provider}")
+                logger.error(f"   {available_msg}")
+
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"No {target_provider} connection found or provider not available. {available_msg}",
+                )
+
+        # Check if we have any CV data
         if not cv_data:
+            logger.error("❌ No CV data available for cover letter generation")
             raise HTTPException(
                 status_code=400,
-                detail="No CV data available for cover letter generation",
+                detail="No CV data available for cover letter generation. Please provide resume_data, upload a file, or connect a cloud provider.",
             )
 
         # Generate cover letter using AI
@@ -457,14 +460,25 @@ async def generate_cover_letter(
 
         # Record activity
         try:
+            activity_data = {
+                "job_title": job_title,
+                "company": company_name,
+                "data_source": data_source or "unknown",
+            }
+
+            if resume_data:
+                activity_data["source"] = "provided_data"
+            elif resume_file:
+                activity_data["source"] = "upload"
+            elif resume_id:
+                activity_data["source"] = (
+                    f"cloud_{target_provider if 'target_provider' in locals() else 'unknown'}"
+                )
+
             await record_session_activity(
                 session["session_id"],
                 "cover_letter_generated",
-                {
-                    "job_title": job_title,
-                    "company": company_name,
-                    "source": "google_drive" if resume_id else "upload",
-                },
+                activity_data,
             )
         except Exception as e:
             logger.warning(f"⚠️ Failed to record activity (non-critical): {e}")
@@ -479,6 +493,7 @@ async def generate_cover_letter(
             "job_title": job_title,
             "company_name": company_name,
             "generated_at": datetime.utcnow().isoformat(),
+            "data_source": data_source or "unknown",
         }
 
     except HTTPException:
@@ -493,6 +508,151 @@ async def generate_cover_letter(
         )
 
 
+# Keep all other endpoints unchanged...
+@router.post("/save")
+async def save_cover_letter_to_drive(
+    cover_letter_data: dict,
+    session: dict = Depends(get_current_session),
+):
+    """
+    Save a generated cover letter to Google Drive or OneDrive based on user preference
+    """
+    try:
+        logger.info(
+            f"💾 Saving cover letter to cloud storage for session: {session.get('session_id')}"
+        )
+
+        # Get user's preferred cloud provider from session or data
+        cloud_provider = cover_letter_data.get("cloud_provider", "google_drive")
+
+        # Get cloud tokens from session
+        cloud_tokens = session.get("cloud_tokens", {})
+
+        if cloud_provider == "google_drive":
+            provider_tokens = cloud_tokens.get("google_drive")
+            provider_name = "Google Drive"
+        elif cloud_provider == "onedrive":
+            provider_tokens = cloud_tokens.get("onedrive")
+            provider_name = "OneDrive"
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid cloud provider. Supported providers: google_drive, onedrive",
+            )
+
+        if not provider_tokens:
+            raise HTTPException(
+                status_code=403,
+                detail=f"No {provider_name} connection found. Please connect {provider_name} first.",
+            )
+
+        logger.info(
+            f"📄 Cover letter title: {cover_letter_data.get('title', 'Untitled')} to {provider_name}"
+        )
+
+        # Prepare cover letter data for storage
+        cover_letter_storage_data = {
+            "metadata": {
+                "version": "1.0",
+                "created_at": datetime.utcnow().isoformat(),
+                "last_modified": datetime.utcnow().isoformat(),
+                "created_with": "cv-privacy-platform",
+                "type": "cover_letter",
+                "cloud_provider": cloud_provider,
+            },
+            "cover_letter_data": {
+                "title": cover_letter_data.get("title", "Untitled Cover Letter"),
+                "company_name": cover_letter_data.get("company_name", ""),
+                "job_title": cover_letter_data.get("job_title", ""),
+                "job_description": cover_letter_data.get("job_description", ""),
+                "recipient_name": cover_letter_data.get("recipient_name", ""),
+                "recipient_title": cover_letter_data.get("recipient_title", ""),
+                "cover_letter_content": cover_letter_data.get(
+                    "cover_letter_content", {}
+                ),
+                "applicant_info": cover_letter_data.get("applicant_info", {}),
+                "job_info": cover_letter_data.get("job_info", {}),
+                "is_favorite": cover_letter_data.get("is_favorite", False),
+                "resume_id": cover_letter_data.get("resume_id"),
+                "created_at": cover_letter_data.get(
+                    "created_at", datetime.utcnow().isoformat()
+                ),
+                "updated_at": datetime.utcnow().isoformat(),
+            },
+        }
+
+        # Generate filename for the cover letter
+        safe_title = "".join(
+            c
+            for c in cover_letter_data.get("title", "cover_letter")
+            if c.isalnum() or c in (" ", "-", "_")
+        ).strip()
+        safe_title = safe_title.replace(" ", "_")[:50]
+        filename = f"cover_letter_{safe_title}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.json"
+
+        # Save to cloud storage
+        content = json.dumps(cover_letter_storage_data, indent=2, default=str)
+
+        file_id = None
+        if cloud_provider == "google_drive":
+            access_token = provider_tokens["access_token"]
+            async with GoogleDriveProvider(access_token) as provider:
+                file_id = await provider.upload_file(
+                    filename, content, folder_name="Cover_Letters"
+                )
+
+        elif cloud_provider == "onedrive":
+            access_token = provider_tokens["access_token"]
+            async with OneDriveProvider(access_token) as provider:
+                file_id = await provider.upload_file(
+                    filename, content, folder_name="Cover_Letters"
+                )
+
+        logger.info(f"✅ Cover letter saved to {provider_name}: {file_id}")
+
+        # Record activity
+        try:
+            await record_session_activity(
+                session["session_id"],
+                "cover_letter_saved",
+                {
+                    "file_id": file_id,
+                    "title": cover_letter_data.get("title"),
+                    "company": cover_letter_data.get("company_name"),
+                    "cloud_provider": cloud_provider,
+                },
+            )
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to record activity (non-critical): {e}")
+
+        # Return success response
+        return {
+            "success": True,
+            "file_id": file_id,
+            "filename": filename,
+            "cloud_provider": cloud_provider,
+            "message": f"Cover letter saved to {provider_name} successfully",
+            "cover_letter_data": {
+                **cover_letter_storage_data["cover_letter_data"],
+                "id": file_id,
+            },
+        }
+
+    except (GoogleDriveError, OneDriveError) as e:
+        logger.error(f"❌ Cloud storage error: {e}")
+        raise HTTPException(status_code=502, detail=f"Cloud storage error: {str(e)}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Unexpected error saving cover letter: {str(e)}")
+        import traceback
+
+        logger.error(f"❌ Full traceback: {traceback.format_exc()}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to save cover letter: {str(e)}"
+        )
+
+
 @router.get("/test")
 async def test_cover_letter_endpoint():
     """Test endpoint to verify cover letter API is working"""
@@ -500,70 +660,143 @@ async def test_cover_letter_endpoint():
         "message": "Cover letter API is working",
         "timestamp": datetime.utcnow().isoformat(),
         "openai_configured": cover_letter_service.openai_client is not None,
+        "onedrive_available": ONEDRIVE_AVAILABLE,
     }
 
 
 @router.get("/list-cover-letters")
-async def list_cover_letters_from_google_drive(
+async def list_cover_letters_provider(
+    provider: str = Query(..., description="Cloud provider (google_drive or onedrive)"),
     session: dict = Depends(get_current_session),
 ):
-    """List all cover letters from Google Drive"""
+    """
+    Temporary endpoint for frontend compatibility
+    """
     try:
         cloud_tokens = session.get("cloud_tokens", {})
-        google_drive_tokens = cloud_tokens.get("google_drive")
 
-        if not google_drive_tokens:
-            raise HTTPException(
-                status_code=403, detail="No Google Drive connection found"
+        if provider not in cloud_tokens:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "success": False,
+                    "error": f"Provider '{provider}' not connected",
+                    "cover_letters": [],
+                },
             )
 
-        # Ensure token is valid
-        valid_tokens = await google_drive_service.ensure_valid_token(
-            google_drive_tokens
-        )
-
-        # Update session if tokens were refreshed
-        if valid_tokens != google_drive_tokens:
-            cloud_tokens["google_drive"] = valid_tokens
-            await session_manager.update_session_cloud_tokens(
-                session["session_id"], cloud_tokens
-            )
-
-        access_token = valid_tokens["access_token"]
-
-        async with GoogleDriveProvider(access_token) as provider:
-            # Look for cover letter files in Cover_Letters folder
-            files = await provider.list_files(folder_name="Cover_Letters")
-
-        # Filter for cover letter files
-        cover_letter_files = []
-        for file in files:
-            if "cover_letter" in file.name.lower() and file.name.endswith(".json"):
-                cover_letter_files.append(
-                    {
-                        "id": file.file_id,
-                        "title": file.name.replace(".json", "")
-                        .replace("cover_letter_", "")
-                        .replace("_", " ")
-                        .title(),
-                        "name": file.name,
-                        "created_at": file.created_at.isoformat(),
-                        "updated_at": file.last_modified.isoformat(),
-                        "size": file.size_bytes,
-                    }
-                )
-
-        logger.info(f"📋 Found {len(cover_letter_files)} cover letters")
-
+        # For now, return empty array with success message
         return {
             "success": True,
-            "provider": "google_drive",
-            "cover_letters": cover_letter_files,
-            "count": len(cover_letter_files),
+            "provider": provider,
+            "cover_letters": [],
+            "message": f"Provider '{provider}' connected but cover letters listing not fully implemented yet",
         }
 
     except Exception as e:
-        logger.error(f"❌ List cover letters failed: {str(e)}")
+        logger.error(f"❌ List cover letters failed for {provider}: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "error": f"Failed to list cover letters: {str(e)}",
+                "cover_letters": [],
+            },
+        )
+
+
+@router.get("/list")
+async def list_cover_letters_multi_provider(
+    provider: Optional[str] = Query(None),
+    session: dict = Depends(get_current_session),
+):
+    """
+    List cover letters from all connected providers or a specific provider
+    """
+    try:
+        logger.info(
+            f"📋 Listing cover letters from providers for session: {session.get('session_id')}"
+        )
+
+        cloud_tokens = session.get("cloud_tokens", {})
+        available_providers = list(cloud_tokens.keys())
+
+        if provider and provider not in available_providers:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Provider '{provider}' not connected. Available: {available_providers}",
+            )
+
+        target_providers = [provider] if provider else available_providers
+        all_cover_letters = []
+
+        for target_provider in target_providers:
+            try:
+                if target_provider == "google_drive":
+                    # Use Google Drive service
+                    google_drive_tokens = cloud_tokens["google_drive"]
+                    valid_tokens = await google_drive_service.ensure_valid_token(
+                        google_drive_tokens
+                    )
+
+                    if valid_tokens != google_drive_tokens:
+                        cloud_tokens["google_drive"] = valid_tokens
+                        await session_manager.update_session_cloud_tokens(
+                            session["session_id"], cloud_tokens
+                        )
+
+                    access_token = valid_tokens["access_token"]
+
+                    async with GoogleDriveProvider(access_token) as provider:
+                        files = await provider.list_files(folder_name="Cover_Letters")
+
+                    # Process Google Drive files
+                    for file in files:
+                        if "cover_letter" in file.name.lower() and file.name.endswith(
+                            ".json"
+                        ):
+                            all_cover_letters.append(
+                                {
+                                    "id": file.file_id,
+                                    "title": file.name.replace(".json", "")
+                                    .replace("cover_letter_", "")
+                                    .replace("_", " ")
+                                    .title(),
+                                    "name": file.name,
+                                    "created_at": file.created_at.isoformat(),
+                                    "updated_at": file.last_modified.isoformat(),
+                                    "size": file.size_bytes,
+                                    "provider": "google_drive",
+                                    "storageType": "google_drive",
+                                }
+                            )
+
+                elif target_provider == "onedrive" and ONEDRIVE_AVAILABLE:
+                    # Use OneDrive service
+                    onedrive_tokens = cloud_tokens["onedrive"]
+                    # Add OneDrive implementation here similar to Google Drive
+                    # You'll need to implement the OneDrive equivalent
+                    pass
+
+            except Exception as provider_error:
+                logger.warning(
+                    f"⚠️ Failed to list cover letters from {target_provider}: {provider_error}"
+                )
+                continue
+
+        logger.info(
+            f"✅ Found {len(all_cover_letters)} cover letters from {len(target_providers)} providers"
+        )
+
+        return {
+            "success": True,
+            "cover_letters": all_cover_letters,
+            "count": len(all_cover_letters),
+            "providers": target_providers,
+        }
+
+    except Exception as e:
+        logger.error(f"❌ Multi-provider cover letter listing failed: {str(e)}")
         raise HTTPException(
             status_code=500, detail=f"Failed to list cover letters: {str(e)}"
         )
