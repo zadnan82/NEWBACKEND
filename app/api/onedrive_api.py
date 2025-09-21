@@ -1176,3 +1176,46 @@ async def list_onedrive_cvs(session: dict = Depends(get_current_session)):
     except Exception as e:
         logger.error(f"❌ CV list failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to list CVs: {str(e)}")
+
+
+@router.post("/exchange-token")
+async def exchange_onedrive_token(
+    request: dict, session: dict = Depends(get_current_session)
+):
+    """Exchange authorization code for OneDrive tokens (frontend-first flow)"""
+    try:
+        code = request.get("code")
+        state = request.get("state")
+
+        if not code:
+            return {"success": False, "error": "No authorization code provided"}
+
+        # Exchange code for tokens
+        tokens = await onedrive_service.exchange_code_for_tokens(code)
+
+        # Test connection
+        connection_test = await onedrive_service.test_connection(tokens)
+        if not connection_test["success"]:
+            return {"success": False, "error": "Connection test failed"}
+
+        # Store tokens in session
+        cloud_tokens = session.get("cloud_tokens", {})
+        cloud_tokens["onedrive"] = {
+            **tokens,
+            "email": connection_test["user"]["email"],
+            "name": connection_test["user"]["name"],
+        }
+
+        await session_manager.update_session_cloud_tokens(
+            session["session_id"], cloud_tokens
+        )
+
+        return {
+            "success": True,
+            "provider": "onedrive",
+            "user": connection_test["user"],
+        }
+
+    except Exception as e:
+        logger.error(f"OneDrive token exchange failed: {e}")
+        return {"success": False, "error": str(e)}

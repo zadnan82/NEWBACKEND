@@ -179,11 +179,12 @@ async def handle_oauth_callback_get(
         logger.info("🔄 GET CALLBACK: Exchanging authorization code for tokens...")
 
         # Exchange authorization code for tokens using the configured redirect URI
-        redirect_uri = (
-            settings.google_redirect_uri
-            if provider == CloudProvider.GOOGLE_DRIVE
-            else None
-        )
+        if provider == CloudProvider.GOOGLE_DRIVE:
+            redirect_uri = settings.google_redirect_uri
+        elif provider == CloudProvider.ONEDRIVE:
+            redirect_uri = settings.microsoft_redirect_uri
+        else:
+            redirect_uri = None
         if not redirect_uri:
             raise ValueError(f"No redirect URI configured for {provider.value}")
 
