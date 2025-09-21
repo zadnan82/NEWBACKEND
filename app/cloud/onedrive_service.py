@@ -143,8 +143,13 @@ class OneDriveService:
 
         # Log storage preparation info
         photo_info = "No photo"
-        if cv_dict.get("photo", {}).get("photolink"):
-            photolink = cv_dict["photo"]["photolink"]
+
+        # SAFELY check photolink - add null checks
+        photolink = None
+        if cv_dict.get("photo") and isinstance(cv_dict["photo"], dict):
+            photolink = cv_dict["photo"].get("photolink")
+
+        if photolink and isinstance(photolink, str):
             if photolink.startswith("data:image"):
                 size_kb = len(photolink) // 1024
                 photo_info = f"Base64 image (~{size_kb}KB)"
@@ -152,10 +157,22 @@ class OneDriveService:
                 photo_info = f"URL image"
             else:
                 photo_info = f"Unknown format"
+        elif photolink is None:
+            photo_info = "No photo (None)"
+        else:
+            photo_info = f"Invalid photo type: {type(photolink)}"
 
         logger.info(
             f"📦 Preparing CV for OneDrive storage: {cv_data.title}, Photo: {photo_info}"
         )
+
+        # Determine photo type safely
+        photo_type = "none"
+        if photolink and isinstance(photolink, str):
+            if photolink.startswith("data:image"):
+                photo_type = "base64"
+            elif photolink.startswith("http"):
+                photo_type = "url"
 
         storage_data = {
             "metadata": {
@@ -164,13 +181,7 @@ class OneDriveService:
                 "last_modified": datetime.utcnow().isoformat(),
                 "created_with": "cv-privacy-platform",
                 "provider": "onedrive",
-                "photo_type": "base64"
-                if cv_dict.get("photo", {})
-                .get("photolink", "")
-                .startswith("data:image")
-                else "url"
-                if cv_dict.get("photo", {}).get("photolink", "").startswith("http")
-                else "none",
+                "photo_type": photo_type,  # Use the safely determined type
             },
             "cv_data": cv_dict,
         }

@@ -91,8 +91,10 @@ class OneDriveProvider:
         try:
             url = f"{self.api_base}/me"
 
-            result = await self._make_request("GET", url)
+            # ADD THIS DEBUG LINE
+            logger.info(f"🔍 Testing with token: {self.access_token[:20]}...")
 
+            result = await self._make_request("GET", url)
             return {
                 "success": True,
                 "user": {
@@ -108,19 +110,24 @@ class OneDriveProvider:
         """Get or create CV folder in OneDrive"""
         logger.info(f"🔍 Looking for folder: {folder_name}")
 
-        # Search for existing folder in root
-        search_url = f"{self.api_base}/me/drive/root/children"
-        params = {"$filter": f"name eq '{folder_name}' and folder ne null"}
-
         try:
+            # First, try to get the folder using children endpoint with simpler filter
+            search_url = f"{self.api_base}/me/drive/root/children"
+            params = {
+                "$filter": f"name eq '{folder_name}'"
+            }  # Remove the 'folder ne null' part
+
             result = await self._make_request("GET", search_url, params=params)
 
+            # Check if we found a folder (not just any item with that name)
             if result.get("value"):
-                folder_id = result["value"][0]["id"]
-                logger.info(f"✅ Found existing folder: {folder_id}")
-                return folder_id
+                for item in result["value"]:
+                    if item.get("folder"):  # This is actually a folder
+                        folder_id = item["id"]
+                        logger.info(f"✅ Found existing folder: {folder_id}")
+                        return folder_id
 
-            # Create folder if it doesn't exist
+            # If folder doesn't exist, create it
             logger.info(f"📁 Creating new folder: {folder_name}")
             create_data = {
                 "name": folder_name,
@@ -334,6 +341,26 @@ class OneDriveProvider:
             logger.warning(f"Failed to get storage quota: {e}")
             return None
 
+    async def test_basic_connection(self) -> Dict[str, Any]:
+        """Test with the most basic endpoint"""
+        try:
+            # Try the simplest possible endpoint
+            url = "https://graph.microsoft.com/v1.0/me/drive"
+            headers = {"Authorization": f"Bearer {self.access_token}"}
+
+            async with self.session.get(url, headers=headers) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    return {"success": True, "drive_id": result.get("id")}
+                else:
+                    error_text = await response.text()
+                    return {
+                        "success": False,
+                        "error": f"Status {response.status}: {error_text}",
+                    }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
 
 class OneDriveOAuth:
     """Handle OneDrive OAuth flow"""
@@ -344,13 +371,13 @@ class OneDriveOAuth:
         self.redirect_uri = settings.microsoft_redirect_uri
 
     def get_auth_url(self, state: str) -> str:
-        """Generate Microsoft OAuth URL - CORRECTED for frontend callback"""
+        """Generate Microsoft OAuth URL"""
         base_url = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
 
         params = {
             "client_id": self.client_id,
-            "redirect_uri": self.redirect_uri,  # This will be frontend URL
-            "scope": "Files.ReadWrite offline_access",
+            "redirect_uri": self.redirect_uri,
+            "scope": "https://graph.microsoft.com/Files.ReadWrite https://graph.microsoft.com/User.Read offline_access",  # Full scope URLs
             "response_type": "code",
             "state": state,
         }
@@ -370,7 +397,7 @@ class OneDriveOAuth:
             "client_id": self.client_id,
             "client_secret": self.client_secret,
             "redirect_uri": self.redirect_uri,
-            "scope": "Files.ReadWrite offline_access",
+            "scope": "https://graph.microsoft.com/Files.ReadWrite https://graph.microsoft.com/User.Read offline_access",
         }
 
         logger.info(f"🔄 Exchanging code for tokens...")
@@ -409,7 +436,7 @@ class OneDriveOAuth:
             "refresh_token": refresh_token,
             "client_id": self.client_id,
             "client_secret": self.client_secret,
-            "scope": "Files.ReadWrite offline_access",
+            "scope": "https://graph.microsoft.com/Files.ReadWrite offline_access",
         }
 
         logger.info(f"🔄 Refreshing token...")

@@ -47,7 +47,7 @@ class Settings(BaseSettings):
     microsoft_client_id: str = os.getenv("MICROSOFT_CLIENT_ID", "")
     microsoft_client_secret: str = os.getenv("MICROSOFT_CLIENT_SECRET", "")
     microsoft_redirect_uri: str = os.getenv(
-        "MICROSOFT_REDIRECT_URI", "http://localhost:5173/cloud/callback/onedrive"
+        "MICROSOFT_REDIRECT_URI", "http://localhost:8000/api/cloud/callback/onedrive"
     )
 
     # Dropbox OAuth
@@ -256,7 +256,7 @@ class CloudConfig:
         },
         "onedrive": {
             "name": "Microsoft OneDrive",
-            "scopes": ["Files.ReadWrite", "offline_access"],
+            "scopes": ["Files.ReadWrite offline_access"],
             "api_base": "https://graph.microsoft.com/v1.0",
             "auth_url": "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
             "token_url": "https://login.microsoftonline.com/common/oauth2/v2.0/token",
