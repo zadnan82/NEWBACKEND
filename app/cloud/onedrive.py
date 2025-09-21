@@ -347,7 +347,23 @@ class OneDriveProvider:
             children_url = f"{self.api_base}/me/drive/root/children"
             params = {"$filter": f"name eq '{folder_name}' and folder ne null"}
 
-            result = await self._make_request("GET", children_url, params=params)
+            # Try to create folder directly instead of listing children
+            folder_url = (
+                f"https://graph.microsoft.com/v1.0/me/drive/root:/{folder_name}"
+            )
+            try:
+                result = await self._make_request("GET", folder_url)
+                return result["id"]
+            except OneDriveError:
+                # Folder doesn't exist, create it
+                create_url = "https://graph.microsoft.com/v1.0/me/drive/root/children"
+                folder_data = {
+                    "name": folder_name,
+                    "folder": {},
+                    "@microsoft.graph.conflictBehavior": "replace",
+                }
+                result = await self._make_request("POST", create_url, json=folder_data)
+                return result["id"]
 
             if result.get("value"):
                 for item in result["value"]:

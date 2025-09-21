@@ -1,4 +1,4 @@
-# app/api/cover_letter.py - FIXED VERSION with Multi-Provider Support
+# app/api/cover_letter.py - FIXED VERSION
 """
 FIXED AI-powered cover letter generation API endpoints that work with any provider
 """
@@ -508,14 +508,13 @@ async def generate_cover_letter(
         )
 
 
-# Keep all other endpoints unchanged...
 @router.post("/save")
 async def save_cover_letter_to_drive(
     cover_letter_data: dict,
     session: dict = Depends(get_current_session),
 ):
     """
-    Save a generated cover letter to Google Drive or OneDrive based on user preference
+    FIXED: Save a generated cover letter to Google Drive or OneDrive based on user preference
     """
     try:
         logger.info(
@@ -653,26 +652,17 @@ async def save_cover_letter_to_drive(
         )
 
 
-@router.get("/test")
-async def test_cover_letter_endpoint():
-    """Test endpoint to verify cover letter API is working"""
-    return {
-        "message": "Cover letter API is working",
-        "timestamp": datetime.utcnow().isoformat(),
-        "openai_configured": cover_letter_service.openai_client is not None,
-        "onedrive_available": ONEDRIVE_AVAILABLE,
-    }
-
-
 @router.get("/list-cover-letters")
 async def list_cover_letters_provider(
     provider: str = Query(..., description="Cloud provider (google_drive or onedrive)"),
     session: dict = Depends(get_current_session),
 ):
     """
-    Temporary endpoint for frontend compatibility
+    FIXED: List cover letters from specific provider
     """
     try:
+        logger.info(f"📋 Listing cover letters from {provider}...")
+
         cloud_tokens = session.get("cloud_tokens", {})
 
         if provider not in cloud_tokens:
@@ -685,12 +675,186 @@ async def list_cover_letters_provider(
                 },
             )
 
-        # For now, return empty array with success message
+        cover_letter_files = []
+
+        if provider == "google_drive":
+            # Load from Google Drive
+            google_drive_tokens = cloud_tokens["google_drive"]
+
+            # Ensure token is valid
+            valid_tokens = await google_drive_service.ensure_valid_token(
+                google_drive_tokens
+            )
+            if valid_tokens != google_drive_tokens:
+                cloud_tokens["google_drive"] = valid_tokens
+                await session_manager.update_session_cloud_tokens(
+                    session["session_id"], cloud_tokens
+                )
+
+            access_token = valid_tokens["access_token"]
+
+            async with GoogleDriveProvider(access_token) as drive_provider:
+                files = await drive_provider.list_files(folder_name="Cover_Letters")
+
+            # Process each Google Drive cover letter file
+            for file in files:
+                if "cover_letter" in file.name.lower() and file.name.endswith(".json"):
+                    try:
+                        # Load the file content to extract metadata
+                        async with GoogleDriveProvider(access_token) as drive_provider:
+                            content = await drive_provider.download_file(file.file_id)
+
+                        # Parse the content to get metadata
+                        company_name = "Not specified"
+                        job_title = "Not specified"
+                        title = (
+                            file.name.replace(".json", "")
+                            .replace("cover_letter_", "")
+                            .replace("_", " ")
+                            .title()
+                        )
+
+                        try:
+                            data = json.loads(content)
+                            cover_letter_data = data.get("cover_letter_data", {})
+
+                            company_name = (
+                                cover_letter_data.get("company_name") or "Not specified"
+                            )
+                            job_title = (
+                                cover_letter_data.get("job_title") or "Not specified"
+                            )
+                            title = cover_letter_data.get("title") or title
+
+                        except Exception as parse_error:
+                            logger.warning(
+                                f"Failed to parse Google Drive cover letter content: {parse_error}"
+                            )
+
+                        cover_letter_files.append(
+                            {
+                                "id": file.file_id,
+                                "title": title,
+                                "company_name": company_name,
+                                "job_title": job_title,
+                                "name": file.name,
+                                "created_at": file.created_at.isoformat(),
+                                "updated_at": file.last_modified.isoformat(),
+                                "size": file.size_bytes,
+                            }
+                        )
+
+                    except Exception as file_error:
+                        logger.warning(
+                            f"Failed to process Google Drive file {file.file_id}: {file_error}"
+                        )
+
+        elif provider == "onedrive" and ONEDRIVE_AVAILABLE:
+            # Load from OneDrive
+            onedrive_tokens = cloud_tokens["onedrive"]
+
+            # Ensure token is valid
+            valid_tokens = await onedrive_service.ensure_valid_token(onedrive_tokens)
+            if valid_tokens != onedrive_tokens:
+                cloud_tokens["onedrive"] = valid_tokens
+                await session_manager.update_session_cloud_tokens(
+                    session["session_id"], cloud_tokens
+                )
+
+            access_token = valid_tokens["access_token"]
+
+            try:
+                async with OneDriveProvider(access_token) as onedrive_provider:
+                    files = await onedrive_provider.list_files(
+                        folder_name="Cover_Letters"
+                    )
+            except Exception as folder_error:
+                logger.warning(f"Failed to list Cover_Letters folder: {folder_error}")
+                # Fallback: try to list all files and filter
+                try:
+                    async with OneDriveProvider(access_token) as onedrive_provider:
+                        files = await onedrive_provider.list_files()
+                except Exception as fallback_error:
+                    logger.error(
+                        f"OneDrive listing completely failed: {fallback_error}"
+                    )
+                    files = []
+
+            # Process each OneDrive cover letter file
+            for file in files:
+                file_name_lower = file.name.lower()
+
+                # Check if it's a cover letter file (more flexible for OneDrive)
+                if "cover_letter" in file_name_lower:
+                    try:
+                        # Load the file content to extract metadata
+                        async with OneDriveProvider(access_token) as onedrive_provider:
+                            content = await onedrive_provider.download_file(
+                                file.file_id
+                            )
+
+                        # Parse the content to get metadata
+                        company_name = "Not specified"
+                        job_title = "Not specified"
+                        title = (
+                            file.name.replace(".json", "")
+                            .replace("cover_letter_", "")
+                            .replace("_", " ")
+                            .title()
+                        )
+
+                        try:
+                            data = json.loads(content)
+                            cover_letter_data = data.get("cover_letter_data", {})
+
+                            company_name = (
+                                cover_letter_data.get("company_name") or "Not specified"
+                            )
+                            job_title = (
+                                cover_letter_data.get("job_title") or "Not specified"
+                            )
+                            title = cover_letter_data.get("title") or title
+
+                        except Exception as parse_error:
+                            logger.warning(
+                                f"Failed to parse OneDrive cover letter content: {parse_error}"
+                            )
+
+                        cover_letter_files.append(
+                            {
+                                "id": file.file_id,
+                                "title": title,
+                                "company_name": company_name,
+                                "job_title": job_title,
+                                "name": file.name,
+                                "created_at": file.created_at.isoformat(),
+                                "updated_at": file.last_modified.isoformat(),
+                                "size": file.size_bytes,
+                            }
+                        )
+
+                    except Exception as file_error:
+                        logger.warning(
+                            f"Failed to process OneDrive file {file.file_id}: {file_error}"
+                        )
+
+        else:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "success": False,
+                    "error": f"Provider {provider} not supported or not available",
+                    "cover_letters": [],
+                },
+            )
+
+        logger.info(f"✅ Found {len(cover_letter_files)} cover letters from {provider}")
+
         return {
             "success": True,
             "provider": provider,
-            "cover_letters": [],
-            "message": f"Provider '{provider}' connected but cover letters listing not fully implemented yet",
+            "cover_letters": cover_letter_files,
+            "count": len(cover_letter_files),
         }
 
     except Exception as e:
@@ -705,136 +869,251 @@ async def list_cover_letters_provider(
         )
 
 
-@router.get("/list")
-async def list_cover_letters_multi_provider(
-    provider: Optional[str] = Query(None),
+@router.get("/{file_id}")
+async def get_cover_letter_by_id(
+    file_id: str,
+    provider: str = Query("google_drive", description="Cloud provider"),
     session: dict = Depends(get_current_session),
 ):
     """
-    List cover letters from all connected providers or a specific provider
+    FIXED: Load a specific cover letter by ID from any provider
     """
     try:
-        logger.info(
-            f"📋 Listing cover letters from providers for session: {session.get('session_id')}"
-        )
+        # URL decode the file_id to handle special characters
+        import urllib.parse
+
+        decoded_file_id = urllib.parse.unquote(file_id)
+
+        logger.info(f"📥 Loading cover letter {decoded_file_id} from {provider}...")
 
         cloud_tokens = session.get("cloud_tokens", {})
-        available_providers = list(cloud_tokens.keys())
 
-        if provider and provider not in available_providers:
+        if provider not in cloud_tokens:
             raise HTTPException(
-                status_code=400,
-                detail=f"Provider '{provider}' not connected. Available: {available_providers}",
+                status_code=403, detail=f"No {provider} connection found"
             )
 
-        target_providers = [provider] if provider else available_providers
-        all_cover_letters = []
+        if provider == "google_drive":
+            google_drive_tokens = cloud_tokens["google_drive"]
 
-        for target_provider in target_providers:
-            try:
-                if target_provider == "google_drive":
-                    # Use Google Drive service
-                    google_drive_tokens = cloud_tokens["google_drive"]
-                    valid_tokens = await google_drive_service.ensure_valid_token(
-                        google_drive_tokens
-                    )
-
-                    if valid_tokens != google_drive_tokens:
-                        cloud_tokens["google_drive"] = valid_tokens
-                        await session_manager.update_session_cloud_tokens(
-                            session["session_id"], cloud_tokens
-                        )
-
-                    access_token = valid_tokens["access_token"]
-
-                    async with GoogleDriveProvider(access_token) as provider:
-                        files = await provider.list_files(folder_name="Cover_Letters")
-
-                    # Process Google Drive files
-                    for file in files:
-                        if "cover_letter" in file.name.lower() and file.name.endswith(
-                            ".json"
-                        ):
-                            all_cover_letters.append(
-                                {
-                                    "id": file.file_id,
-                                    "title": file.name.replace(".json", "")
-                                    .replace("cover_letter_", "")
-                                    .replace("_", " ")
-                                    .title(),
-                                    "name": file.name,
-                                    "created_at": file.created_at.isoformat(),
-                                    "updated_at": file.last_modified.isoformat(),
-                                    "size": file.size_bytes,
-                                    "provider": "google_drive",
-                                    "storageType": "google_drive",
-                                }
-                            )
-
-                elif target_provider == "onedrive" and ONEDRIVE_AVAILABLE:
-                    # Use OneDrive service
-                    onedrive_tokens = cloud_tokens["onedrive"]
-                    # Add OneDrive implementation here similar to Google Drive
-                    # You'll need to implement the OneDrive equivalent
-                    pass
-
-            except Exception as provider_error:
-                logger.warning(
-                    f"⚠️ Failed to list cover letters from {target_provider}: {provider_error}"
+            # Ensure token is valid
+            valid_tokens = await google_drive_service.ensure_valid_token(
+                google_drive_tokens
+            )
+            if valid_tokens != google_drive_tokens:
+                cloud_tokens["google_drive"] = valid_tokens
+                await session_manager.update_session_cloud_tokens(
+                    session["session_id"], cloud_tokens
                 )
-                continue
 
-        logger.info(
-            f"✅ Found {len(all_cover_letters)} cover letters from {len(target_providers)} providers"
+            access_token = valid_tokens["access_token"]
+
+            async with GoogleDriveProvider(access_token) as drive_provider:
+                content = await drive_provider.download_file(decoded_file_id)
+
+        elif provider == "onedrive" and ONEDRIVE_AVAILABLE:
+            onedrive_tokens = cloud_tokens["onedrive"]
+
+            # Ensure token is valid
+            valid_tokens = await onedrive_service.ensure_valid_token(onedrive_tokens)
+            if valid_tokens != onedrive_tokens:
+                cloud_tokens["onedrive"] = valid_tokens
+                await session_manager.update_session_cloud_tokens(
+                    session["session_id"], cloud_tokens
+                )
+
+            access_token = valid_tokens["access_token"]
+
+            async with OneDriveProvider(access_token) as onedrive_provider:
+                content = await onedrive_provider.download_file(decoded_file_id)
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Provider {provider} not supported or not available",
+            )
+
+        # Parse the content
+        try:
+            data = json.loads(content)
+            cover_letter_data = data.get("cover_letter_data", {})
+
+            if not cover_letter_data:
+                cover_letter_data = data
+
+            # Structure the response for frontend
+            structured_data = {
+                "id": decoded_file_id,
+                "title": cover_letter_data.get("title", "Untitled Cover Letter"),
+                "company_name": cover_letter_data.get("company_name", ""),
+                "job_title": cover_letter_data.get("job_title", ""),
+                "recipient_name": cover_letter_data.get("recipient_name", ""),
+                "recipient_title": cover_letter_data.get("recipient_title", ""),
+                "job_description": cover_letter_data.get("job_description", ""),
+                "cover_letter_content": cover_letter_data.get(
+                    "cover_letter_content", ""
+                ),
+                "applicant_info": cover_letter_data.get("applicant_info", {}),
+                "job_info": cover_letter_data.get("job_info", {}),
+                "is_favorite": cover_letter_data.get("is_favorite", False),
+                "resume_id": cover_letter_data.get("resume_id"),
+                "created_at": cover_letter_data.get(
+                    "created_at", datetime.utcnow().isoformat()
+                ),
+                "updated_at": cover_letter_data.get(
+                    "updated_at", datetime.utcnow().isoformat()
+                ),
+                "author_name": cover_letter_data.get("applicant_info", {}).get(
+                    "name", ""
+                ),
+                "author_email": cover_letter_data.get("applicant_info", {}).get(
+                    "email", ""
+                ),
+                "author_phone": cover_letter_data.get("applicant_info", {}).get(
+                    "phone", ""
+                ),
+                "provider": provider,
+            }
+
+            logger.info(
+                f"✅ Cover letter loaded successfully: {structured_data['title']}"
+            )
+
+            return {
+                "success": True,
+                "provider": provider,
+                "cover_letter_data": structured_data,
+            }
+
+        except json.JSONDecodeError as e:
+            logger.error(f"❌ Failed to parse cover letter JSON: {e}")
+            raise HTTPException(status_code=400, detail="Invalid cover letter format")
+
+    except Exception as e:
+        logger.error(f"❌ Failed to load cover letter: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to load cover letter: {str(e)}"
+        )
+
+
+@router.delete("/delete/{file_id}")
+async def delete_cover_letter_by_id(
+    file_id: str,
+    provider: str = Query("google_drive", description="Cloud provider"),
+    session: dict = Depends(get_current_session),
+):
+    """
+    FIXED: Delete a cover letter by ID from any provider
+    """
+    try:
+        # URL decode the file_id to handle special characters
+        import urllib.parse
+
+        decoded_file_id = urllib.parse.unquote(file_id)
+
+        logger.info(f"🗑️ Deleting cover letter {decoded_file_id} from {provider}...")
+
+        cloud_tokens = session.get("cloud_tokens", {})
+
+        if provider not in cloud_tokens:
+            raise HTTPException(
+                status_code=403, detail=f"No {provider} connection found"
+            )
+
+        success = False
+
+        if provider == "google_drive":
+            google_drive_tokens = cloud_tokens["google_drive"]
+
+            # Ensure token is valid
+            valid_tokens = await google_drive_service.ensure_valid_token(
+                google_drive_tokens
+            )
+            if valid_tokens != google_drive_tokens:
+                cloud_tokens["google_drive"] = valid_tokens
+                await session_manager.update_session_cloud_tokens(
+                    session["session_id"], cloud_tokens
+                )
+
+            access_token = valid_tokens["access_token"]
+
+            async with GoogleDriveProvider(access_token) as drive_provider:
+                success = await drive_provider.delete_file(decoded_file_id)
+
+        elif provider == "onedrive" and ONEDRIVE_AVAILABLE:
+            onedrive_tokens = cloud_tokens["onedrive"]
+
+            # Ensure token is valid
+            valid_tokens = await onedrive_service.ensure_valid_token(onedrive_tokens)
+            if valid_tokens != onedrive_tokens:
+                cloud_tokens["onedrive"] = valid_tokens
+                await session_manager.update_session_cloud_tokens(
+                    session["session_id"], cloud_tokens
+                )
+
+            access_token = valid_tokens["access_token"]
+
+            async with OneDriveProvider(access_token) as onedrive_provider:
+                success = await onedrive_provider.delete_file(decoded_file_id)
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Provider {provider} not supported or not available",
+            )
+
+        if not success:
+            raise HTTPException(
+                status_code=404, detail="Cover letter not found or could not be deleted"
+            )
+
+        logger.info(f"✅ Cover letter deleted successfully: {decoded_file_id}")
+
+        # Record activity
+        await record_session_activity(
+            session["session_id"],
+            "cover_letter_deleted",
+            {"provider": provider, "file_id": decoded_file_id},
         )
 
         return {
             "success": True,
-            "cover_letters": all_cover_letters,
-            "count": len(all_cover_letters),
-            "providers": target_providers,
+            "message": "Cover letter deleted successfully",
+            "provider": provider,
+            "file_id": decoded_file_id,
         }
 
     except Exception as e:
-        logger.error(f"❌ Multi-provider cover letter listing failed: {str(e)}")
+        logger.error(f"❌ Failed to delete cover letter: {str(e)}")
         raise HTTPException(
-            status_code=500, detail=f"Failed to list cover letters: {str(e)}"
+            status_code=500, detail=f"Failed to delete cover letter: {str(e)}"
         )
 
 
 @router.put("/update/{file_id}")
-async def update_cover_letter(
+async def update_cover_letter_by_id(
     file_id: str,
     cover_letter_data: dict,
+    provider: str = Query("google_drive", description="Cloud provider"),
     session: dict = Depends(get_current_session),
 ):
-    """Update an existing cover letter in Google Drive"""
+    """
+    FIXED: Update an existing cover letter in any provider
+    """
     try:
-        logger.info(f"🔄 Updating cover letter: {file_id}")
+        # URL decode the file_id to handle special characters
+        import urllib.parse
 
-        # Get Google Drive tokens from session
+        decoded_file_id = urllib.parse.unquote(file_id)
+
+        logger.info(f"🔄 Updating cover letter {decoded_file_id} in {provider}...")
+
         cloud_tokens = session.get("cloud_tokens", {})
-        google_drive_tokens = cloud_tokens.get("google_drive")
 
-        if not google_drive_tokens:
-            raise HTTPException(
-                status_code=403,
-                detail="No Google Drive connection found",
-            )
-
-        # Ensure token is valid
-        valid_tokens = await google_drive_service.ensure_valid_token(
-            google_drive_tokens
-        )
-
-        # Update session if tokens were refreshed
-        if valid_tokens != google_drive_tokens:
-            cloud_tokens["google_drive"] = valid_tokens
-            await session_manager.update_session_cloud_tokens(
-                session["session_id"], cloud_tokens
-            )
-
-        access_token = valid_tokens["access_token"]
+        if provider not in cloud_tokens:
+            return {
+                "success": False,
+                "error": f"No {provider} connection found",
+                "provider": provider,
+            }
 
         # Prepare updated cover letter data
         updated_data = {
@@ -845,40 +1124,87 @@ async def update_cover_letter(
                 "created_with": "cv-privacy-platform",
                 "type": "cover_letter",
             },
-            "cover_letter_data": cover_letter_data,
+            "cover_letter_data": {
+                **cover_letter_data,
+                "updated_at": datetime.utcnow().isoformat(),
+            },
         }
 
         # Convert to JSON
         content = json.dumps(updated_data, indent=2, default=str)
+        success = False
 
-        # Update file in Google Drive
-        async with GoogleDriveProvider(access_token) as provider:
-            success = await provider.update_coverletter(file_id, content)
+        if provider == "google_drive":
+            google_drive_tokens = cloud_tokens["google_drive"]
 
-        if not success:
-            raise HTTPException(status_code=500, detail="Failed to update cover letter")
+            # Ensure token is valid
+            valid_tokens = await google_drive_service.ensure_valid_token(
+                google_drive_tokens
+            )
+            if valid_tokens != google_drive_tokens:
+                cloud_tokens["google_drive"] = valid_tokens
+                await session_manager.update_session_cloud_tokens(
+                    session["session_id"], cloud_tokens
+                )
 
-        logger.info(f"✅ Cover letter updated successfully: {file_id}")
+            access_token = valid_tokens["access_token"]
 
-        # Record activity
-        await record_session_activity(
-            session["session_id"],
-            "cover_letter_updated",
-            {
-                "file_id": file_id,
-                "title": cover_letter_data.get("title"),
-                "company": cover_letter_data.get("company_name"),
-            },
-        )
+            async with GoogleDriveProvider(access_token) as drive_provider:
+                success = await drive_provider.update_file(decoded_file_id, content)
 
-        return {
-            "success": True,
-            "file_id": file_id,
-            "message": "Cover letter updated successfully",
-        }
+        elif provider == "onedrive" and ONEDRIVE_AVAILABLE:
+            onedrive_tokens = cloud_tokens["onedrive"]
+
+            # Ensure token is valid
+            valid_tokens = await onedrive_service.ensure_valid_token(onedrive_tokens)
+            if valid_tokens != onedrive_tokens:
+                cloud_tokens["onedrive"] = valid_tokens
+                await session_manager.update_session_cloud_tokens(
+                    session["session_id"], cloud_tokens
+                )
+
+            access_token = valid_tokens["access_token"]
+
+            async with OneDriveProvider(access_token) as onedrive_provider:
+                success = await onedrive_provider.update_file(decoded_file_id, content)
+        else:
+            return {
+                "success": False,
+                "error": f"Provider {provider} not supported or not available",
+                "provider": provider,
+            }
+
+        if success:
+            logger.info(f"✅ Cover letter updated successfully: {decoded_file_id}")
+
+            # Record activity
+            await record_session_activity(
+                session["session_id"],
+                "cover_letter_updated",
+                {
+                    "provider": provider,
+                    "file_id": decoded_file_id,
+                    "title": cover_letter_data.get("title"),
+                },
+            )
+
+            return {
+                "success": True,
+                "file_id": decoded_file_id,
+                "message": "Cover letter updated successfully",
+                "provider": provider,
+            }
+        else:
+            return {
+                "success": False,
+                "error": "Failed to update cover letter",
+                "provider": provider,
+            }
 
     except Exception as e:
-        logger.error(f"❌ Cover letter update failed: {str(e)}")
-        raise HTTPException(
-            status_code=500, detail=f"Failed to update cover letter: {str(e)}"
-        )
+        logger.error(f"❌ Update cover letter failed: {str(e)}")
+        return {
+            "success": False,
+            "error": f"Failed to update cover letter: {str(e)}",
+            "provider": provider,
+        }
