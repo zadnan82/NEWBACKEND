@@ -10,6 +10,7 @@ from typing import Dict, List, Optional, Any
 from cryptography.fernet import Fernet
 import logging
 
+
 from ..config import get_settings
 from ..schemas import (
     CloudProvider,
@@ -23,6 +24,8 @@ from ..schemas import (
 # Import both Google Drive and OneDrive services
 from .google_drive_service import google_drive_service, GoogleDriveError
 from .onedrive_service import onedrive_service, OneDriveError
+
+from .dropbox_service import dropbox_service, DropboxError
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -46,12 +49,15 @@ class CloudService:
         self.providers = {
             CloudProvider.GOOGLE_DRIVE: google_drive_service,
             CloudProvider.ONEDRIVE: onedrive_service,
+            CloudProvider.DROPBOX: dropbox_service,
             # Future providers can be added here
             # CloudProvider.DROPBOX: dropbox_service,
             # CloudProvider.BOX: box_service,
         }
 
-        logger.info("CloudService initialized with Google Drive and OneDrive support")
+        logger.info(
+            "CloudService initialized with Google Drive, OneDrive, and Dropbox support"
+        )
 
     def _encrypt_tokens(self, tokens: Dict[str, Any]) -> str:
         """Encrypt cloud provider tokens securely"""

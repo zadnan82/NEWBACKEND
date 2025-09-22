@@ -26,6 +26,7 @@ from app.database import (
 from app.api import (
     google_drive_api,
     onedrive_api,
+    dropbox_api,
     resume,
     cloud,
     ai_enhance,
@@ -256,6 +257,8 @@ app.include_router(
     google_drive_api.router, prefix="/api/google-drive", tags=["google-drive"]
 )
 app.include_router(onedrive_api.router, prefix="/api/onedrive", tags=["OneDrive"])
+
+app.include_router(dropbox_api.router, prefix="/api/dropbox", tags=["Dropbox"])
 
 
 # Startup and shutdown events

@@ -514,40 +514,65 @@ async def save_cover_letter_to_drive(
     session: dict = Depends(get_current_session),
 ):
     """
-    FIXED: Save a generated cover letter to Google Drive or OneDrive based on user preference
+    FIXED: Save a generated cover letter to Google Drive, OneDrive, or Dropbox based on user preference
     """
     try:
         logger.info(
             f"💾 Saving cover letter to cloud storage for session: {session.get('session_id')}"
         )
 
-        # Get user's preferred cloud provider from session or data
-        cloud_provider = cover_letter_data.get("cloud_provider", "google_drive")
+        # Extract save options from the request
+        save_to_cloud = cover_letter_data.get("save_to_cloud", False)
+        preferred_provider = cover_letter_data.get("preferred_provider", "google_drive")
+
+        logger.info(
+            f"📁 Save to cloud: {save_to_cloud}, Preferred provider: {preferred_provider}"
+        )
+
+        # If not saving to cloud, just return success (for local-only saves)
+        if not save_to_cloud:
+            return {
+                "success": True,
+                "message": "Cover letter saved locally",
+                "cloudResult": None,
+            }
 
         # Get cloud tokens from session
         cloud_tokens = session.get("cloud_tokens", {})
 
-        if cloud_provider == "google_drive":
-            provider_tokens = cloud_tokens.get("google_drive")
+        # Validate provider availability
+        if preferred_provider not in cloud_tokens:
+            logger.error(f"❌ Provider {preferred_provider} not found in cloud tokens")
+            return {
+                "success": True,  # Local save succeeded
+                "cloudResult": {
+                    "success": False,
+                    "error": f"No {preferred_provider} connection found. Please connect {preferred_provider} first.",
+                    "provider": preferred_provider,
+                },
+            }
+
+        # Get provider-specific tokens
+        provider_tokens = cloud_tokens[preferred_provider]
+
+        if preferred_provider == "google_drive":
             provider_name = "Google Drive"
-        elif cloud_provider == "onedrive":
-            provider_tokens = cloud_tokens.get("onedrive")
+        elif preferred_provider == "onedrive":
             provider_name = "OneDrive"
+        elif preferred_provider == "dropbox":
+            provider_name = "Dropbox"
         else:
-            raise HTTPException(
-                status_code=400,
-                detail="Invalid cloud provider. Supported providers: google_drive, onedrive",
-            )
+            return {
+                "success": True,  # Local save succeeded
+                "cloudResult": {
+                    "success": False,
+                    "error": f"Unsupported provider: {preferred_provider}",
+                    "provider": preferred_provider,
+                },
+            }
 
-        if not provider_tokens:
-            raise HTTPException(
-                status_code=403,
-                detail=f"No {provider_name} connection found. Please connect {provider_name} first.",
-            )
-
-        logger.info(
-            f"📄 Cover letter title: {cover_letter_data.get('title', 'Untitled')} to {provider_name}"
-        )
+        logger.info(f"📄 Saving cover letter to {provider_name}")
+        logger.info(f"📝 Title: {cover_letter_data.get('title', 'Untitled')}")
 
         # Prepare cover letter data for storage
         cover_letter_storage_data = {
@@ -557,7 +582,7 @@ async def save_cover_letter_to_drive(
                 "last_modified": datetime.utcnow().isoformat(),
                 "created_with": "cv-privacy-platform",
                 "type": "cover_letter",
-                "cloud_provider": cloud_provider,
+                "cloud_provider": preferred_provider,
             },
             "cover_letter_data": {
                 "title": cover_letter_data.get("title", "Untitled Cover Letter"),
@@ -573,6 +598,8 @@ async def save_cover_letter_to_drive(
                 "job_info": cover_letter_data.get("job_info", {}),
                 "is_favorite": cover_letter_data.get("is_favorite", False),
                 "resume_id": cover_letter_data.get("resume_id"),
+                "cv_source": cover_letter_data.get("cv_source"),
+                "cv_provider": cover_letter_data.get("cv_provider"),
                 "created_at": cover_letter_data.get(
                     "created_at", datetime.utcnow().isoformat()
                 ),
@@ -589,67 +616,147 @@ async def save_cover_letter_to_drive(
         safe_title = safe_title.replace(" ", "_")[:50]
         filename = f"cover_letter_{safe_title}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.json"
 
-        # Save to cloud storage
+        # Convert to JSON
         content = json.dumps(cover_letter_storage_data, indent=2, default=str)
 
+        # Save to the appropriate cloud provider
         file_id = None
-        if cloud_provider == "google_drive":
-            access_token = provider_tokens["access_token"]
-            async with GoogleDriveProvider(access_token) as provider:
-                file_id = await provider.upload_file(
-                    filename, content, folder_name="Cover_Letters"
-                )
 
-        elif cloud_provider == "onedrive":
-            access_token = provider_tokens["access_token"]
-            async with OneDriveProvider(access_token) as provider:
-                file_id = await provider.upload_file(
-                    filename, content, folder_name="Cover_Letters"
-                )
-
-        logger.info(f"✅ Cover letter saved to {provider_name}: {file_id}")
-
-        # Record activity
         try:
-            await record_session_activity(
-                session["session_id"],
-                "cover_letter_saved",
-                {
+            if preferred_provider == "google_drive":
+                # Ensure token is valid
+                valid_tokens = await google_drive_service.ensure_valid_token(
+                    provider_tokens
+                )
+                if valid_tokens != provider_tokens:
+                    cloud_tokens["google_drive"] = valid_tokens
+                    await session_manager.update_session_cloud_tokens(
+                        session["session_id"], cloud_tokens
+                    )
+                    provider_tokens = valid_tokens
+
+                access_token = provider_tokens["access_token"]
+                async with GoogleDriveProvider(access_token) as provider:
+                    file_id = await provider.upload_file(
+                        filename, content, folder_name="Cover_Letters"
+                    )
+
+            elif preferred_provider == "onedrive" and ONEDRIVE_AVAILABLE:
+                # Ensure token is valid
+                valid_tokens = await onedrive_service.ensure_valid_token(
+                    provider_tokens
+                )
+                if valid_tokens != provider_tokens:
+                    cloud_tokens["onedrive"] = valid_tokens
+                    await session_manager.update_session_cloud_tokens(
+                        session["session_id"], cloud_tokens
+                    )
+                    provider_tokens = valid_tokens
+
+                access_token = provider_tokens["access_token"]
+                async with OneDriveProvider(access_token) as provider:
+                    file_id = await provider.upload_file(
+                        filename, content, folder_name="Cover_Letters"
+                    )
+
+                logger.info(f"✅ Cover letter uploaded to OneDrive: {file_id}")
+
+            elif preferred_provider == "dropbox":
+                # Import Dropbox provider (add this import at the top of the file)
+                from app.cloud.dropbox import DropboxProvider
+
+                # For Dropbox, we use the access_token directly (no refresh needed for Dropbox tokens)
+                access_token = provider_tokens["access_token"]
+
+                logger.info(
+                    f"🔵 Using Dropbox provider with token: {access_token[:10]}..."
+                )
+
+                async with DropboxProvider(access_token) as provider:
+                    # Test connection first
+                    test_result = await provider.test_connection()
+                    if not test_result.get("success"):
+                        raise Exception(
+                            f"Dropbox connection test failed: {test_result.get('error', 'Unknown error')}"
+                        )
+
+                    logger.info("✅ Dropbox connection test passed")
+
+                    # Upload the file
+                    file_id = await provider.upload_file(
+                        filename, content, folder_name="Cover_Letters"
+                    )
+
+                logger.info(f"✅ Cover letter uploaded to Dropbox: {file_id}")
+
+            else:
+                raise Exception(
+                    f"Provider {preferred_provider} not supported or not available"
+                )
+
+            if not file_id:
+                raise Exception("File upload returned no file ID")
+
+            logger.info(f"✅ Cover letter saved to {provider_name}: {file_id}")
+
+            # Record activity
+            try:
+                await record_session_activity(
+                    session["session_id"],
+                    "cover_letter_saved",
+                    {
+                        "file_id": file_id,
+                        "title": cover_letter_data.get("title"),
+                        "company": cover_letter_data.get("company_name"),
+                        "cloud_provider": preferred_provider,
+                    },
+                )
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to record activity (non-critical): {e}")
+
+            # Return success response
+            return {
+                "success": True,
+                "cloudResult": {
+                    "success": True,
                     "file_id": file_id,
-                    "title": cover_letter_data.get("title"),
-                    "company": cover_letter_data.get("company_name"),
-                    "cloud_provider": cloud_provider,
+                    "filename": filename,
+                    "provider": preferred_provider,
+                    "message": f"Cover letter saved to {provider_name} successfully",
                 },
+                "message": f"Cover letter saved locally and to {provider_name}",
+                "cover_letter_data": {
+                    **cover_letter_storage_data["cover_letter_data"],
+                    "id": file_id,
+                },
+            }
+
+        except Exception as cloud_error:
+            logger.error(
+                f"❌ Cloud save failed for {preferred_provider}: {cloud_error}"
             )
-        except Exception as e:
-            logger.warning(f"⚠️ Failed to record activity (non-critical): {e}")
+            return {
+                "success": True,  # Local save succeeded
+                "cloudResult": {
+                    "success": False,
+                    "error": str(cloud_error),
+                    "provider": preferred_provider,
+                },
+                "message": "Cover letter saved locally (cloud sync failed)",
+            }
 
-        # Return success response
-        return {
-            "success": True,
-            "file_id": file_id,
-            "filename": filename,
-            "cloud_provider": cloud_provider,
-            "message": f"Cover letter saved to {provider_name} successfully",
-            "cover_letter_data": {
-                **cover_letter_storage_data["cover_letter_data"],
-                "id": file_id,
-            },
-        }
-
-    except (GoogleDriveError, OneDriveError) as e:
-        logger.error(f"❌ Cloud storage error: {e}")
-        raise HTTPException(status_code=502, detail=f"Cloud storage error: {str(e)}")
-    except HTTPException:
-        raise
     except Exception as e:
         logger.error(f"❌ Unexpected error saving cover letter: {str(e)}")
         import traceback
 
         logger.error(f"❌ Full traceback: {traceback.format_exc()}")
-        raise HTTPException(
-            status_code=500, detail=f"Failed to save cover letter: {str(e)}"
-        )
+
+        # Return error response
+        return {
+            "success": False,
+            "error": f"Failed to save cover letter: {str(e)}",
+            "cloudResult": None,
+        }
 
 
 @router.get("/list-cover-letters")
@@ -765,15 +872,28 @@ async def list_cover_letters_provider(
 
             try:
                 async with OneDriveProvider(access_token) as onedrive_provider:
+                    # First try to list Cover_Letters folder specifically
                     files = await onedrive_provider.list_files(
                         folder_name="Cover_Letters"
                     )
+
+                    logger.info(
+                        f"📂 DEBUG: Found {len(files)} files in Cover_Letters folder"
+                    )
+
             except Exception as folder_error:
                 logger.warning(f"Failed to list Cover_Letters folder: {folder_error}")
-                # Fallback: try to list all files and filter
+                # Fallback: try to list root folder and filter for cover letter files
                 try:
                     async with OneDriveProvider(access_token) as onedrive_provider:
-                        files = await onedrive_provider.list_files()
+                        all_files = await onedrive_provider.list_files()
+                        # Filter for cover letter files
+                        files = [
+                            f for f in all_files if "cover_letter" in f.name.lower()
+                        ]
+                        logger.info(
+                            f"📂 DEBUG: Found {len(files)} cover letter files in root folder"
+                        )
                 except Exception as fallback_error:
                     logger.error(
                         f"OneDrive listing completely failed: {fallback_error}"
@@ -784,14 +904,132 @@ async def list_cover_letters_provider(
             for file in files:
                 file_name_lower = file.name.lower()
 
-                # Check if it's a cover letter file (more flexible for OneDrive)
-                if "cover_letter" in file_name_lower:
+                logger.info(f"🔍 DEBUG: Processing file: {file.name}")
+                logger.info(f"🔍 DEBUG: File size: {file.size_bytes} bytes")
+
+                # Check if it's a cover letter file (be more inclusive)
+                if (
+                    "cover_letter" in file_name_lower
+                    or "coverletter" in file_name_lower
+                ) and file.name.endswith(".json"):
                     try:
+                        logger.info(f"📥 Loading content for cover letter: {file.name}")
+
                         # Load the file content to extract metadata
                         async with OneDriveProvider(access_token) as onedrive_provider:
                             content = await onedrive_provider.download_file(
                                 file.file_id
                             )
+
+                        # Parse the content to get metadata
+                        company_name = "Not specified"
+                        job_title = "Not specified"
+                        title = (
+                            file.name.replace(".json", "")
+                            .replace("cover_letter_", "")
+                            .replace("_", " ")
+                            .title()
+                        )
+
+                        try:
+                            data = json.loads(content)
+                            cover_letter_data = data.get("cover_letter_data", data)
+
+                            company_name = cover_letter_data.get(
+                                "company_name", "Not specified"
+                            )
+                            job_title = cover_letter_data.get(
+                                "job_title", "Not specified"
+                            )
+                            title = cover_letter_data.get("title", title)
+
+                            logger.info(
+                                f"✅ Parsed cover letter: {title} at {company_name}"
+                            )
+
+                        except Exception as parse_error:
+                            logger.warning(
+                                f"Failed to parse OneDrive cover letter content: {parse_error}"
+                            )
+
+                        cover_letter_files.append(
+                            {
+                                "id": file.file_id,
+                                "title": title,
+                                "company_name": company_name,
+                                "job_title": job_title,
+                                "name": file.name,
+                                "created_at": file.created_at.isoformat(),
+                                "updated_at": file.last_modified.isoformat(),
+                                "size": file.size_bytes,
+                            }
+                        )
+
+                    except Exception as file_error:
+                        logger.warning(
+                            f"Failed to process OneDrive file {file.file_id}: {file_error}"
+                        )
+                        # Add basic info if we can't parse content
+                        cover_letter_files.append(
+                            {
+                                "id": file.file_id,
+                                "title": file.name.replace(".json", "")
+                                .replace("_", " ")
+                                .title(),
+                                "company_name": "Not specified",
+                                "job_title": "Not specified",
+                                "name": file.name,
+                                "created_at": file.created_at.isoformat(),
+                                "updated_at": file.last_modified.isoformat(),
+                                "size": file.size_bytes,
+                            }
+                        )
+                else:
+                    logger.info(f"⏭️ Skipping non-cover-letter file: {file.name}")
+
+            logger.info(
+                f"✅ Found {len(cover_letter_files)} OneDrive cover letters total"
+            )
+
+        elif provider == "dropbox":
+            # ADD DROPBOX SUPPORT HERE
+            dropbox_tokens = cloud_tokens["dropbox"]
+
+            # Import dropbox service if not already imported
+            from app.cloud.dropbox_service import dropbox_service
+
+            # Ensure token is valid
+            valid_tokens = await dropbox_service.ensure_valid_token(dropbox_tokens)
+            if valid_tokens != dropbox_tokens:
+                cloud_tokens["dropbox"] = valid_tokens
+                await session_manager.update_session_cloud_tokens(
+                    session["session_id"], cloud_tokens
+                )
+
+            access_token = valid_tokens["access_token"]
+
+            # Import Dropbox provider
+            from app.cloud.dropbox import DropboxProvider
+
+            try:
+                async with DropboxProvider(access_token) as dropbox_provider:
+                    files = await dropbox_provider.list_files(
+                        folder_name="Cover_Letters"
+                    )
+            except Exception as folder_error:
+                logger.warning(f"Failed to list Cover_Letters folder: {folder_error}")
+                files = []
+
+            # Process each Dropbox cover letter file
+            for file in files:
+                file_name_lower = file.name.lower()
+
+                # Check if it's a cover letter file
+                if "cover_letter" in file_name_lower and file.name.endswith(".json"):
+                    try:
+                        # Load the file content to extract metadata
+                        async with DropboxProvider(access_token) as dropbox_provider:
+                            content = await dropbox_provider.download_file(file.file_id)
 
                         # Parse the content to get metadata
                         company_name = "Not specified"
@@ -817,7 +1055,7 @@ async def list_cover_letters_provider(
 
                         except Exception as parse_error:
                             logger.warning(
-                                f"Failed to parse OneDrive cover letter content: {parse_error}"
+                                f"Failed to parse Dropbox cover letter content: {parse_error}"
                             )
 
                         cover_letter_files.append(
@@ -835,7 +1073,7 @@ async def list_cover_letters_provider(
 
                     except Exception as file_error:
                         logger.warning(
-                            f"Failed to process OneDrive file {file.file_id}: {file_error}"
+                            f"Failed to process Dropbox file {file.file_id}: {file_error}"
                         )
 
         else:
@@ -1167,6 +1405,32 @@ async def update_cover_letter_by_id(
 
             async with OneDriveProvider(access_token) as onedrive_provider:
                 success = await onedrive_provider.update_file(decoded_file_id, content)
+
+        elif provider == "dropbox":
+            # Import Dropbox provider (add this import at the top of the file if not already there)
+            from app.cloud.dropbox import DropboxProvider
+            from app.cloud.dropbox_service import dropbox_service
+
+            dropbox_tokens = cloud_tokens["dropbox"]
+
+            # Ensure token is valid
+            valid_tokens = await dropbox_service.ensure_valid_token(dropbox_tokens)
+            if valid_tokens != dropbox_tokens:
+                cloud_tokens["dropbox"] = valid_tokens
+                await session_manager.update_session_cloud_tokens(
+                    session["session_id"], cloud_tokens
+                )
+
+            access_token = valid_tokens["access_token"]
+
+            # Fix the path format for Dropbox
+            dropbox_file_path = decoded_file_id
+            if not dropbox_file_path.startswith("/"):
+                dropbox_file_path = "/" + dropbox_file_path
+
+            async with DropboxProvider(access_token) as dropbox_provider:
+                success = await dropbox_provider.update_file(dropbox_file_path, content)
+
         else:
             return {
                 "success": False,

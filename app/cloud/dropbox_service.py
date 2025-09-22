@@ -122,15 +122,27 @@ class DropboxService:
         return converted
 
     def _convert_backend_to_frontend_schema(self, cv_data: Dict) -> Dict:
-        """Convert backend schema to frontend schema"""
+        """Convert backend schema to frontend schema - FIXED for Dropbox"""
         logger.info(
             f"Converting backend schema to frontend: {cv_data.get('title', 'No title')}"
         )
 
-        # Handle photo field
-        photo_data = cv_data.get("photo", cv_data.get("photos", {}))
-        if not isinstance(photo_data, dict):
-            photo_data = {"photolink": None}
+        # Handle different field naming patterns that might come from Dropbox
+        personal_info = cv_data.get("personal_info", {})
+
+        # Ensure full_name field exists and is properly formatted
+        if "full_name" not in personal_info:
+            # Try alternative field names that might be used
+            if "name" in personal_info:
+                personal_info["full_name"] = personal_info["name"]
+            elif "displayName" in personal_info:
+                personal_info["full_name"] = personal_info["displayName"]
+            elif "firstName" in personal_info and "lastName" in personal_info:
+                personal_info["full_name"] = (
+                    f"{personal_info['firstName']} {personal_info['lastName']}"
+                )
+            else:
+                personal_info["full_name"] = ""  # Ensure the field exists
 
         converted = {
             "title": cv_data.get("title", "My Resume"),
@@ -147,7 +159,7 @@ class DropboxService:
                     "language": "en",
                 },
             ),
-            "personal_info": cv_data.get("personal_info", {}),
+            "personal_info": personal_info,  # Use the fixed personal_info
             "educations": cv_data.get("educations", []),
             "experiences": cv_data.get("experiences", []),
             "skills": cv_data.get("skills", []),
@@ -158,10 +170,47 @@ class DropboxService:
             "hobbies": cv_data.get("hobbies", []),
             "courses": cv_data.get("courses", []),
             "internships": cv_data.get("internships", []),
-            "photo": photo_data,
+            "photo": cv_data.get("photo", cv_data.get("photos", {})),
         }
 
+        logger.info(
+            f"✅ Schema conversion completed - full_name: {converted['personal_info'].get('full_name', 'MISSING')}"
+        )
         return converted
+
+    def _parse_cv_from_storage(self, content: str) -> CompleteCV:
+        """Parse CV data from Dropbox storage - WITH DEBUG"""
+        try:
+            data = json.loads(content)
+            cv_data = data.get("cv_data", data)
+
+            # DEBUG: Log the actual structure
+            logger.info(f"📋 RAW DROPBOX CV DATA STRUCTURE:")
+            logger.info(f"   - Has personal_info: {'personal_info' in cv_data}")
+            if "personal_info" in cv_data:
+                logger.info(
+                    f"   - personal_info keys: {list(cv_data['personal_info'].keys())}"
+                )
+                logger.info(
+                    f"   - full_name value: {cv_data['personal_info'].get('full_name', 'MISSING')}"
+                )
+                logger.info(
+                    f"   - name value: {cv_data['personal_info'].get('name', 'MISSING')}"
+                )
+
+            # Convert the data to match frontend schema
+            frontend_cv = self._convert_backend_to_frontend_schema(cv_data)
+
+            # DEBUG: Log the converted structure
+            logger.info(f"📋 CONVERTED CV DATA:")
+            logger.info(
+                f"   - full_name: {frontend_cv.get('personal_info', {}).get('full_name', 'STILL MISSING')}"
+            )
+
+            return CompleteCV.parse_obj(frontend_cv)
+        except Exception as e:
+            logger.error(f"CV parsing failed: {e}")
+            raise ValueError(f"Invalid CV file format: {e}")
 
     def _prepare_cv_for_storage(self, cv_data: CompleteCV) -> str:
         """Prepare CV data for Dropbox storage"""
@@ -339,34 +388,6 @@ class DropboxService:
             logger.error(f"❌ Dropbox save failed: {e}")
             raise DropboxError(f"Failed to save CV: {str(e)}")
 
-    async def update_cv(self, tokens: dict, file_id: str, cv_data: Dict) -> bool:
-        """Update an existing CV in Dropbox"""
-        try:
-            logger.info(f"🔄 Updating CV in Dropbox: {file_id}")
-
-            # Convert and validate data
-            converted_data = self._convert_frontend_to_backend_schema(cv_data)
-            complete_cv = CompleteCV(**converted_data)
-
-            # Prepare content for storage
-            content = self._prepare_cv_for_storage(complete_cv)
-
-            access_token = tokens["access_token"]
-
-            async with DropboxProvider(access_token) as provider:
-                success = await provider.update_file(file_id, content)
-
-            if success:
-                logger.info(f"✅ CV updated successfully: {file_id}")
-            else:
-                logger.error(f"❌ Failed to update CV: {file_id}")
-
-            return success
-
-        except Exception as e:
-            logger.error(f"❌ CV update failed: {e}")
-            raise DropboxError(f"Failed to update CV: {str(e)}")
-
     async def load_cv(self, token_data: Dict[str, Any], file_id: str) -> CompleteCV:
         """Load CV from Dropbox"""
         if not token_data or not token_data.get("access_token"):
@@ -420,6 +441,32 @@ class DropboxService:
         except Exception as e:
             logger.error(f"Failed to delete CV from Dropbox: {e}")
             raise DropboxError(f"Failed to delete CV: {str(e)}")
+
+    async def update_cv(self, tokens: dict, file_id: str, cv_data: Dict) -> bool:
+        """Update an existing CV in Dropbox"""
+        try:
+            logger.info(f"🔄 Updating CV in Dropbox: {file_id}")
+
+            # Convert and validate data
+            converted_data = self._convert_frontend_to_backend_schema(cv_data)
+            complete_cv = CompleteCV(**converted_data)
+
+            # Prepare content for storage
+            content = self._prepare_cv_for_storage(complete_cv)
+
+            access_token = tokens["access_token"]
+
+            async with DropboxProvider(access_token) as provider:
+                success = await provider.update_file(file_id, content)
+
+            if success:
+                logger.info(f"✅ CV updated successfully: {file_id}")
+
+            return success
+
+        except Exception as e:
+            logger.error(f"❌ CV update failed: {e}")
+            raise DropboxError(f"Failed to update CV: {str(e)}")
 
 
 # Global Dropbox service instance

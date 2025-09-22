@@ -1,4 +1,4 @@
-# app/api/dropbox_api.py
+# app/api/dropbox_api.py - CREATE THIS FILE
 """
 Dropbox API endpoints - Following Google Drive API pattern
 """
@@ -447,13 +447,28 @@ async def list_dropbox_cvs(session: dict = Depends(get_current_session)):
         raise HTTPException(status_code=500, detail=f"Failed to list CVs: {str(e)}")
 
 
-@router.get("/load/{file_id}")
+@router.get("/load/{file_id:path}")
 async def load_cv_from_dropbox(
     file_id: str,
     session: dict = Depends(get_current_session),
 ):
     """Load a specific CV from Dropbox"""
     try:
+        # URL decode and fix path format
+        import urllib.parse
+
+        decoded_file_id = urllib.parse.unquote(file_id)
+
+        # Fix double slash issue
+        if decoded_file_id.startswith("//"):
+            decoded_file_id = decoded_file_id[1:]  # Remove one slash
+
+        # Ensure it starts with /
+        if not decoded_file_id.startswith("/"):
+            decoded_file_id = "/" + decoded_file_id
+
+        logger.info(f"📥 Loading CV from Dropbox: {decoded_file_id}")
+
         cloud_tokens = session.get("cloud_tokens", {})
         dropbox_tokens = cloud_tokens.get("dropbox")
 
@@ -462,27 +477,32 @@ async def load_cv_from_dropbox(
 
         # Ensure token is valid
         valid_tokens = await dropbox_service.ensure_valid_token(dropbox_tokens)
-
-        # Update session if tokens were refreshed
         if valid_tokens != dropbox_tokens:
             cloud_tokens["dropbox"] = valid_tokens
             await session_manager.update_session_cloud_tokens(
                 session["session_id"], cloud_tokens
             )
 
-        # Load CV from Dropbox
-        cv_data = await dropbox_service.load_cv(valid_tokens, file_id)
+        # IMPORTANT: Load CV using the service, not direct provider
+        cv_data = await dropbox_service.load_cv(valid_tokens, decoded_file_id)
 
         # Record activity
         await record_session_activity(
             session["session_id"],
             "cv_loaded",
-            {"provider": "dropbox", "file_id": file_id},
+            {"provider": "dropbox", "file_id": decoded_file_id},
         )
 
-        # Convert to response format
+        # Convert to response format - ensure it matches frontend expectations
         response_data = cv_data.dict()
-        response_data["id"] = file_id
+        response_data["id"] = decoded_file_id
+
+        logger.info(
+            f"✅ CV loaded successfully: {response_data.get('title', 'Untitled')}"
+        )
+        logger.info(
+            f"📋 Personal info present: {bool(response_data.get('personal_info', {}).get('full_name'))}"
+        )
 
         return {"success": True, "provider": "dropbox", "cv_data": response_data}
 
@@ -492,6 +512,121 @@ async def load_cv_from_dropbox(
     except Exception as e:
         logger.error(f"❌ CV load failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to load CV: {str(e)}")
+
+
+@router.get("/cover-letters/{file_id:path}")
+async def load_cover_letter_from_dropbox(
+    file_id: str,
+    session: dict = Depends(get_current_session),
+):
+    """Load a specific cover letter from Dropbox"""
+    try:
+        # URL decode and fix path format
+        import urllib.parse
+
+        decoded_file_id = urllib.parse.unquote(file_id)
+
+        # Fix double slash issue and ensure proper path format
+        if decoded_file_id.startswith("//"):
+            decoded_file_id = decoded_file_id[1:]  # Remove one slash
+
+        # Ensure it starts with /
+        if not decoded_file_id.startswith("/"):
+            decoded_file_id = "/" + decoded_file_id
+
+        logger.info(f"📥 Loading cover letter from Dropbox: {decoded_file_id}")
+
+        cloud_tokens = session.get("cloud_tokens", {})
+        dropbox_tokens = cloud_tokens.get("dropbox")
+
+        if not dropbox_tokens:
+            raise HTTPException(status_code=403, detail="No Dropbox connection found")
+
+        # Ensure token is valid
+        valid_tokens = await dropbox_service.ensure_valid_token(dropbox_tokens)
+        if valid_tokens != dropbox_tokens:
+            cloud_tokens["dropbox"] = valid_tokens
+            await session_manager.update_session_cloud_tokens(
+                session["session_id"], cloud_tokens
+            )
+
+        # Download the file content
+        access_token = valid_tokens["access_token"]
+
+        async with DropboxProvider(access_token) as provider:
+            content = await provider.download_file(decoded_file_id)
+
+        # Parse the JSON content
+        try:
+            data = json.loads(content)
+            cover_letter_data = data.get("cover_letter_data", {})
+
+            if not cover_letter_data:
+                cover_letter_data = data
+
+            # Structure the response for frontend
+            structured_data = {
+                "id": decoded_file_id,
+                "title": cover_letter_data.get("title", "Untitled Cover Letter"),
+                "company_name": cover_letter_data.get("company_name", ""),
+                "job_title": cover_letter_data.get("job_title", ""),
+                "recipient_name": cover_letter_data.get("recipient_name", ""),
+                "recipient_title": cover_letter_data.get("recipient_title", ""),
+                "job_description": cover_letter_data.get("job_description", ""),
+                "cover_letter_content": cover_letter_data.get(
+                    "cover_letter_content", ""
+                ),
+                "applicant_info": cover_letter_data.get("applicant_info", {}),
+                "job_info": cover_letter_data.get("job_info", {}),
+                "is_favorite": cover_letter_data.get("is_favorite", False),
+                "resume_id": cover_letter_data.get("resume_id"),
+                "created_at": cover_letter_data.get(
+                    "created_at", datetime.utcnow().isoformat()
+                ),
+                "updated_at": cover_letter_data.get(
+                    "updated_at", datetime.utcnow().isoformat()
+                ),
+                "author_name": cover_letter_data.get("applicant_info", {}).get(
+                    "name", ""
+                ),
+                "author_email": cover_letter_data.get("applicant_info", {}).get(
+                    "email", ""
+                ),
+                "author_phone": cover_letter_data.get("applicant_info", {}).get(
+                    "phone", ""
+                ),
+                "provider": "dropbox",
+            }
+
+            logger.info(
+                f"✅ Cover letter loaded successfully: {structured_data['title']}"
+            )
+
+            return {
+                "success": True,
+                "provider": "dropbox",
+                "cover_letter_data": structured_data,
+            }
+
+        except json.JSONDecodeError as e:
+            logger.error(f"❌ Failed to parse cover letter JSON: {e}")
+            raise HTTPException(status_code=400, detail="Invalid cover letter format")
+
+        # Record activity
+        await record_session_activity(
+            session["session_id"],
+            "cover_letter_loaded",
+            {"provider": "dropbox", "file_id": decoded_file_id},
+        )
+
+    except DropboxError as e:
+        logger.error(f"❌ Dropbox load failed: {str(e)}")
+        raise HTTPException(status_code=502, detail=f"Dropbox error: {str(e)}")
+    except Exception as e:
+        logger.error(f"❌ Cover letter load failed: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to load cover letter: {str(e)}"
+        )
 
 
 @router.delete("/delete/{file_id}")
@@ -547,7 +682,76 @@ async def delete_cv_from_dropbox(
         raise HTTPException(status_code=500, detail=f"Failed to delete CV: {str(e)}")
 
 
-@router.put("/update-file/{file_id}")
+@router.delete("/cover-letters/{file_id:path}")
+async def delete_cover_letter_from_dropbox(
+    file_id: str,
+    session: dict = Depends(get_current_session),
+):
+    """Delete a cover letter from Dropbox"""
+    try:
+        # URL decode and fix path format
+        import urllib.parse
+
+        decoded_file_id = urllib.parse.unquote(file_id)
+
+        # Fix path format for Dropbox
+        if not decoded_file_id.startswith("/"):
+            decoded_file_id = "/" + decoded_file_id
+
+        logger.info(f"🗑️ Deleting cover letter from Dropbox: {decoded_file_id}")
+
+        cloud_tokens = session.get("cloud_tokens", {})
+        dropbox_tokens = cloud_tokens.get("dropbox")
+
+        if not dropbox_tokens:
+            raise HTTPException(status_code=403, detail="No Dropbox connection found")
+
+        # Ensure token is valid
+        valid_tokens = await dropbox_service.ensure_valid_token(dropbox_tokens)
+        if valid_tokens != dropbox_tokens:
+            cloud_tokens["dropbox"] = valid_tokens
+            await session_manager.update_session_cloud_tokens(
+                session["session_id"], cloud_tokens
+            )
+
+        access_token = valid_tokens["access_token"]
+
+        # Delete cover letter from Dropbox
+        async with DropboxProvider(access_token) as provider:
+            success = await provider.delete_file(decoded_file_id)
+
+        if not success:
+            raise HTTPException(
+                status_code=404, detail="Cover letter not found or could not be deleted"
+            )
+
+        logger.info(f"✅ Cover letter deleted successfully: {decoded_file_id}")
+
+        # Record activity
+        await record_session_activity(
+            session["session_id"],
+            "cover_letter_deleted",
+            {"provider": "dropbox", "file_id": decoded_file_id},
+        )
+
+        return {
+            "success": True,
+            "message": "Cover letter deleted successfully",
+            "provider": "dropbox",
+            "file_id": decoded_file_id,
+        }
+
+    except DropboxError as e:
+        logger.error(f"❌ Dropbox delete failed: {str(e)}")
+        raise HTTPException(status_code=502, detail=f"Dropbox error: {str(e)}")
+    except Exception as e:
+        logger.error(f"❌ Cover letter delete failed: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to delete cover letter: {str(e)}"
+        )
+
+
+@router.put("/update-file/{file_id:path}")
 async def update_cv_in_dropbox(
     file_id: str,
     cv_data: dict,
@@ -606,6 +810,102 @@ async def update_cv_in_dropbox(
         return {
             "success": False,
             "error": f"Failed to update CV: {str(e)}",
+            "provider": "dropbox",
+        }
+
+
+@router.put("/cover-letters/{file_id:path}")
+async def update_cover_letter_in_dropbox(
+    file_id: str,
+    cover_letter_data: dict,
+    session: dict = Depends(get_current_session),
+):
+    """Update an existing cover letter in Dropbox"""
+    try:
+        # URL decode and fix path format
+        import urllib.parse
+
+        decoded_file_id = urllib.parse.unquote(file_id)
+
+        # Fix path format for Dropbox
+        if not decoded_file_id.startswith("/"):
+            decoded_file_id = "/" + decoded_file_id
+
+        logger.info(f"📝 Updating cover letter in Dropbox: {decoded_file_id}")
+
+        cloud_tokens = session.get("cloud_tokens", {})
+        dropbox_tokens = cloud_tokens.get("dropbox")
+
+        if not dropbox_tokens:
+            return {
+                "success": False,
+                "error": "No Dropbox connection found",
+                "provider": "dropbox",
+            }
+
+        # Ensure token is valid
+        valid_tokens = await dropbox_service.ensure_valid_token(dropbox_tokens)
+        if valid_tokens != dropbox_tokens:
+            cloud_tokens["dropbox"] = valid_tokens
+            await session_manager.update_session_cloud_tokens(
+                session["session_id"], cloud_tokens
+            )
+
+        # Prepare updated cover letter data
+        updated_data = {
+            "metadata": {
+                "version": "1.0",
+                "created_at": datetime.utcnow().isoformat(),
+                "last_modified": datetime.utcnow().isoformat(),
+                "created_with": "cv-privacy-platform",
+                "type": "cover_letter",
+            },
+            "cover_letter_data": {
+                **cover_letter_data,
+                "updated_at": datetime.utcnow().isoformat(),
+            },
+        }
+
+        # Convert to JSON
+        content = json.dumps(updated_data, indent=2, default=str)
+        access_token = valid_tokens["access_token"]
+
+        # Update file in Dropbox
+        async with DropboxProvider(access_token) as provider:
+            success = await provider.update_file(decoded_file_id, content)
+
+        if success:
+            logger.info(f"✅ Cover letter updated successfully: {decoded_file_id}")
+
+            # Record activity
+            await record_session_activity(
+                session["session_id"],
+                "cover_letter_updated",
+                {
+                    "provider": "dropbox",
+                    "file_id": decoded_file_id,
+                    "title": cover_letter_data.get("title"),
+                },
+            )
+
+            return {
+                "success": True,
+                "file_id": decoded_file_id,
+                "message": "Cover letter updated successfully",
+                "provider": "dropbox",
+            }
+        else:
+            return {
+                "success": False,
+                "error": "Failed to update cover letter",
+                "provider": "dropbox",
+            }
+
+    except Exception as e:
+        logger.error(f"❌ Update cover letter failed: {str(e)}")
+        return {
+            "success": False,
+            "error": f"Failed to update cover letter: {str(e)}",
             "provider": "dropbox",
         }
 

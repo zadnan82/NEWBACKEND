@@ -40,19 +40,72 @@ class DropboxProvider:
         if self.session:
             await self.session.close()
 
+    async def test_connection(self) -> Dict[str, Any]:
+        """Test the connection and get basic user info"""
+        try:
+            url = f"{self.api_base}/users/get_current_account"
+
+            # Dropbox expects this specific Content-Type for the user info endpoint
+            headers = {
+                "Authorization": f"Bearer {self.access_token}",
+                "Content-Type": "text/plain; charset=dropbox-cors-hack",
+            }
+
+            logger.info(f"🔄 Dropbox API Request: POST {url}")
+
+            async with self.session.post(
+                url, headers=headers, data=b"null"
+            ) as response:
+                logger.info(f"📊 Response Status: {response.status}")
+
+                if response.status == 401:
+                    error_text = await response.text()
+                    logger.error(f"❌ Dropbox token expired: {error_text}")
+                    raise DropboxError("Access token expired or invalid")
+                elif response.status >= 400:
+                    error_text = await response.text()
+                    logger.error(
+                        f"❌ Dropbox API error {response.status}: {error_text}"
+                    )
+                    raise DropboxError(f"API error {response.status}: {error_text}")
+
+                result = await response.json()
+                logger.info(
+                    f"✅ User info received: {result.get('name', {}).get('display_name', 'No name')}"
+                )
+
+                return {
+                    "success": True,
+                    "user": {
+                        "name": result.get("name", {}).get("display_name", ""),
+                        "email": result.get("email", ""),
+                    },
+                }
+
+        except Exception as e:
+            logger.error(f"❌ Connection test failed: {e}")
+            return {"success": False, "error": str(e)}
+
+    # Also fix your _make_request method to handle this properly:
     async def _make_request(self, method: str, url: str, **kwargs) -> Dict[str, Any]:
         """Make authenticated request to Dropbox API"""
         headers = {
             "Authorization": f"Bearer {self.access_token}",
-            "Content-Type": "application/json",
         }
+
+        # Handle special Dropbox endpoints that need specific Content-Type
+        if method == "POST" and "/users/" in url:
+            headers["Content-Type"] = "text/plain; charset=dropbox-cors-hack"
+            # For user endpoints, send "null" as data
+            if "data" not in kwargs:
+                kwargs["data"] = b"null"
+        elif "json" in kwargs and kwargs["json"] is not None:
+            headers["Content-Type"] = "application/json"
 
         # Merge with any existing headers
         if "headers" in kwargs:
             headers.update(kwargs["headers"])
-            kwargs["headers"] = headers
-        else:
-            kwargs["headers"] = headers
+        kwargs["headers"] = headers
 
         logger.info(f"🔄 Dropbox API Request: {method} {url}")
 
@@ -87,24 +140,6 @@ class DropboxProvider:
             logger.error(f"❌ Dropbox request failed: {str(e)}")
             raise DropboxError(f"Request failed: {str(e)}")
 
-    async def test_connection(self) -> Dict[str, Any]:
-        """Test the connection and get basic user info"""
-        try:
-            url = f"{self.api_base}/users/get_current_account"
-
-            result = await self._make_request("POST", url)
-
-            return {
-                "success": True,
-                "user": {
-                    "name": result.get("name", {}).get("display_name", ""),
-                    "email": result.get("email", ""),
-                },
-            }
-        except Exception as e:
-            logger.error(f"❌ Connection test failed: {e}")
-            return {"success": False, "error": str(e)}
-
     async def _ensure_folder_exists(self, folder_path: str):
         """Ensure folder exists, create if it doesn't"""
         try:
@@ -131,28 +166,40 @@ class DropboxProvider:
 
             try:
                 result = await self._make_request("POST", url, json=data)
+                logger.info(f"🔍 DEBUG: Raw Dropbox response: {result}")
+
             except DropboxError as e:
                 if "not_found" in str(e).lower():
-                    # Folder doesn't exist, return empty list
-                    logger.info(
-                        f"📁 Folder {folder_path} doesn't exist, returning empty list"
-                    )
+                    logger.info(f"📁 Folder {folder_path} doesn't exist")
+
+                    # Try listing root folder to see what exists
+                    logger.info("🔍 DEBUG: Listing root folder to see what exists...")
+                    try:
+                        root_data = {"path": "", "recursive": False}
+                        root_result = await self._make_request(
+                            "POST", url, json=root_data
+                        )
+                        logger.info(f"🔍 DEBUG: Root folder contents: {root_result}")
+
+                        # Look for any folder that might contain cover letters
+                        for entry in root_result.get("entries", []):
+                            if entry.get(".tag") == "folder":
+                                logger.info(f"🔍 DEBUG: Found folder: {entry['name']}")
+
+                    except Exception as root_error:
+                        logger.error(f"❌ Failed to list root folder: {root_error}")
+
                     return []
                 raise
 
             files = []
             for entry in result.get("entries", []):
-                if (
-                    entry.get(".tag") == "file"
-                    and entry["name"].endswith(".json")
-                    and "cv_" in entry["name"].lower()
-                ):
+                if entry.get(".tag") == "file" and entry["name"].endswith(".json"):
+                    logger.info(f"🔍 DEBUG: Found file: {entry['name']}")
                     try:
                         files.append(
                             CloudFileMetadata(
-                                file_id=entry[
-                                    "path_display"
-                                ],  # Dropbox uses paths as IDs
+                                file_id=entry["path_display"],
                                 name=entry["name"],
                                 provider=CloudProvider.DROPBOX,
                                 created_at=datetime.fromisoformat(
@@ -256,11 +303,19 @@ class DropboxProvider:
         try:
             logger.info(f"📝 Updating file in Dropbox: {file_id}")
 
+            # CRITICAL FIX: Ensure file_id starts with / for Dropbox API
+            dropbox_file_path = file_id
+            if not dropbox_file_path.startswith("/"):
+                dropbox_file_path = "/" + dropbox_file_path
+                logger.info(f"🔧 Corrected path to: {dropbox_file_path}")
+
             url = f"{self.content_api_base}/files/upload"
             headers = {
                 "Authorization": f"Bearer {self.access_token}",
                 "Content-Type": "application/octet-stream",
-                "Dropbox-API-Arg": json.dumps({"path": file_id, "mode": "overwrite"}),
+                "Dropbox-API-Arg": json.dumps(
+                    {"path": dropbox_file_path, "mode": "overwrite"}
+                ),
             }
 
             async with self.session.post(
@@ -273,7 +328,7 @@ class DropboxProvider:
                     logger.error(f"❌ Update failed: {error_text}")
                     return False
 
-                logger.info(f"✅ File updated successfully: {file_id}")
+                logger.info(f"✅ File updated successfully: {dropbox_file_path}")
                 return True
 
         except Exception as e:

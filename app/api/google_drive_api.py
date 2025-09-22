@@ -873,13 +873,6 @@ async def update_cv_in_google_drive(
         }
 
 
-# Add this to your app/api/google_drive_api.py file
-
-
-# Add these CLEAN cover letter endpoints to your google_drive_api.py
-# These are completely separate from CV endpoints and won't conflict
-
-
 @router.post("/cover-letter/save-cover-letter")
 async def save_cover_letter_to_google_drive(
     cover_letter_data: dict,

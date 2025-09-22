@@ -54,7 +54,9 @@ class Settings(BaseSettings):
     dropbox_app_key: str = os.getenv("DROPBOX_APP_KEY", "")
     dropbox_app_secret: str = os.getenv("DROPBOX_APP_SECRET", "")
     dropbox_redirect_uri: str = os.getenv(
-        "DROPBOX_REDIRECT_URI", "http://localhost:8000/auth/dropbox/callback"
+        "DROPBOX_REDIRECT_URI",
+        "http://localhost:8000/api/dropbox/callback",
+        # "DROPBOX_REDIRECT_URI", "http://localhost:8000/auth/dropbox/callback"
     )
 
     # Box OAuth
