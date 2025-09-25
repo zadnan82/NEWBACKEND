@@ -4,13 +4,16 @@ AI-powered CV enhancement API endpoints
 FIXED: Modern OpenAI API usage and proper error handling
 """
 
+import json
 import logging
 import asyncio
+import re
 from typing import List, Dict, Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from datetime import datetime
 
 # FIXED: Use modern OpenAI client
+from fastapi.responses import JSONResponse
 from openai import AsyncOpenAI
 from anthropic import AsyncAnthropic
 
@@ -29,10 +32,19 @@ from ..auth.sessions import get_current_session, record_session_activity
 from ..cloud.service import cloud_service, CloudProviderError
 from ..database import get_db
 from ..models import AIUsageTracking
+import redis
+
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+redis_client = redis.Redis(
+    host=settings.redis_host or "localhost",
+    port=settings.redis_port or 6379,
+    db=settings.redis_db or 0,
+    decode_responses=True,
+)
 
 
 class AIService:
@@ -436,10 +448,17 @@ async def enhance_personal_summary(
     try:
         # Check usage limits
         usage_stats = await ai_service._check_daily_usage(session["session_id"])
+        # if usage_stats["remaining"] <= 0:
         if usage_stats["remaining"] <= 0:
-            raise HTTPException(
+            return JSONResponse(
                 status_code=429,
-                detail=f"Daily AI usage limit reached. Used {usage_stats['used_today']}/{usage_stats['limit']} operations.",
+                content={
+                    "error_code": "AI_LIMIT_REACHED",
+                    "used_today": usage_stats["used_today"],
+                    "daily_limit": usage_stats["limit"],
+                    "hours_until_reset": 24,
+                    "message": f"Daily AI usage limit reached. Used {usage_stats['used_today']}/{usage_stats['limit']} operations.",
+                },
             )
 
         # Load CV for context
@@ -644,3 +663,336 @@ async def get_available_ai_models():
             "business_tier": settings.business_tier_ai_operations,
         },
     }
+
+
+@router.post("/improve-section")
+async def improve_cv_section(
+    section: str = Query(..., description="Section to improve"),
+    cv_file_id: str = Query(..., description="CV file ID for context"),
+    provider: CloudProvider = Query(..., description="Cloud provider"),
+    session: dict = Depends(get_current_session),
+    request_body: Dict[str, Any] = {},
+):
+    """Improve a specific CV section asynchronously"""
+
+    try:
+        # Check usage limits
+        usage_stats = await ai_service._check_daily_usage(session["session_id"])
+        if usage_stats["remaining"] <= 0:
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "error_code": "AI_LIMIT_REACHED",
+                    "used_today": usage_stats["used_today"],
+                    "daily_limit": usage_stats["limit"],
+                    "hours_until_reset": 24,
+                },
+            )
+
+        # Generate task ID
+        task_id = f"task_{session['session_id']}_{section}_{datetime.now().timestamp()}"
+
+        # Initialize task status in Redis
+        redis_client.setex(
+            f"cv_task:{task_id}",
+            3600,  # Expire after 1 hour
+            json.dumps(
+                {
+                    "status": "processing",
+                    "section": section,
+                    "created_at": datetime.now().isoformat(),
+                }
+            ),
+        )
+
+        # Process the section improvement
+        try:
+            # Read request body
+            body = (
+                await request_body
+                if hasattr(request_body, "__await__")
+                else request_body
+            )
+
+            result = None
+
+            if section == "summary":
+                current_text = body.get("current_text", "")
+                improved = await ai_service.enhance_summary(current_text)
+                result = {"improved_text": improved}
+
+            elif section == "experiences":
+                experiences = body.get("experiences", [])
+                improved_experiences = []
+
+                for exp in experiences:
+                    improved_desc = await ai_service.enhance_experience_description(
+                        exp.get("description", ""),
+                        exp.get("company", ""),
+                        exp.get("position", ""),
+                    )
+                    improved_experiences.append(
+                        {
+                            "company": exp.get("company", ""),
+                            "position": exp.get("position", ""),
+                            "original": exp.get("description", ""),
+                            "improved_description": improved_desc,
+                        }
+                    )
+
+                result = {"experiences": improved_experiences}
+
+            # Update task with result in Redis
+            redis_client.setex(
+                f"cv_task:{task_id}",
+                3600,
+                json.dumps(
+                    {
+                        "status": "completed",
+                        "section": section,
+                        "result": result,
+                        "completed_at": datetime.now().isoformat(),
+                    }
+                ),
+            )
+
+            # Track usage
+            await ai_service._track_ai_usage(
+                session["session_id"], f"section_{section}"
+            )
+
+        except Exception as e:
+            redis_client.setex(
+                f"cv_task:{task_id}",
+                3600,
+                json.dumps(
+                    {
+                        "status": "failed",
+                        "error": str(e),
+                        "failed_at": datetime.now().isoformat(),
+                    }
+                ),
+            )
+
+        return {
+            "task_id": task_id,
+            "status": "processing",
+            "check_status_url": f"/cv-ai/task-status/{task_id}",
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Section improvement error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/task-status/{task_id}")
+async def get_task_status(task_id: str, session: dict = Depends(get_current_session)):
+    """Get status of an AI enhancement task"""
+
+    task_data = redis_client.get(f"cv_task:{task_id}")
+
+    if not task_data:
+        raise HTTPException(status_code=404, detail="Task not found or expired")
+
+    task = json.loads(task_data)
+
+    response = {"task_id": task_id, "status": task["status"]}
+
+    if task["status"] == "completed":
+        response["result"] = task.get("result", {})
+    elif task["status"] == "failed":
+        response["error"] = task.get("error", "Unknown error")
+
+    return response
+
+
+@router.post("/improve-full-cv")
+async def improve_full_cv(
+    cv_file_id: str = Query(None, description="CV file ID"),
+    provider: str = Query(None, description="Cloud provider"),  # Change to str
+    session: dict = Depends(get_current_session),
+):
+    """Improve entire CV with AI suggestions"""
+
+    try:
+        # Check usage limits
+        usage_stats = await ai_service._check_daily_usage(session["session_id"])
+        if usage_stats["remaining"] <= 0:
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "error_code": "AI_LIMIT_REACHED",
+                    "used_today": usage_stats["used_today"],
+                    "daily_limit": usage_stats["limit"],
+                    "hours_until_reset": 24,
+                },
+            )
+
+        # Try to load CV from cloud if parameters provided
+        cv_data = None
+
+        if cv_file_id and provider:
+            try:
+                cloud_tokens = session.get("cloud_tokens", {})
+                provider_enum = CloudProvider(provider)  # Convert string to enum
+
+                if provider in cloud_tokens:
+                    cv_data = await cloud_service.load_cv(
+                        cloud_tokens, provider_enum, cv_file_id
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to load CV from cloud: {e}")
+
+        # If no CV data, return error
+        if not cv_data:
+            raise HTTPException(
+                status_code=400,
+                detail="Could not load CV data. Please ensure the CV exists in your cloud storage.",
+            )
+
+        # Build comprehensive prompt for full CV improvement
+        cv_summary = {
+            "personal_info": {
+                "full_name": cv_data.personal_info.full_name
+                if cv_data.personal_info
+                else "",
+                "title": cv_data.personal_info.title if cv_data.personal_info else "",
+                "summary": cv_data.personal_info.summary
+                if cv_data.personal_info
+                else "",
+            },
+            "experiences": [
+                {
+                    "company": exp.company,
+                    "position": exp.position,
+                    "description": exp.description,
+                }
+                for exp in cv_data.experiences[:3]  # Limit to prevent token overflow
+            ],
+            "skills": [skill.name for skill in cv_data.skills],
+        }
+
+        prompt = f"""
+        Improve this entire CV with professional, concise suggestions:
+        
+        CURRENT CV:
+        Summary: {cv_summary["personal_info"]["summary"]}
+        
+        Experience:
+        {json.dumps(cv_summary["experiences"], indent=2)}
+        
+        Skills: {", ".join(cv_summary["skills"])}
+        
+        Provide improvements in this format:
+        
+        **Summary:**
+        [Improved summary here - 2-3 sentences, professional and impactful]
+        
+        **Experiences:**
+        For each experience, provide:
+        **[Company Name]** ([Date Range])
+        *[Position]*
+        - [Bullet point 1]
+        - [Bullet point 2]
+        - [Bullet point 3]
+        
+        **Skills:**
+        *Technical Skills:* [comma-separated skills]
+        *Soft Skills:* [comma-separated skills]
+        
+        Keep all text concise, professional, and achievement-focused.
+        """
+
+        # Call OpenAI
+        response = await ai_service.openai_client.chat.completions.create(
+            model=settings.ai_model_premium,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are an expert CV writer. Provide concise, professional improvements.",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=1500,
+            temperature=0.7,
+        )
+
+        raw_text = response.choices[0].message.content.strip()
+
+        # Parse the response
+        improvements = {
+            "summary": {"main": ""},
+            "experiences": {},
+            "skills": {"main": {"parsed": {"categories": {}}}},
+            "raw": raw_text,
+        }
+
+        # Parse summary
+        summary_match = re.search(
+            r"\*\*Summary:\*\*\s*(.*?)(?=\n\n\*\*|\Z)", raw_text, re.DOTALL
+        )
+        if summary_match:
+            improvements["summary"]["main"] = summary_match.group(1).strip()
+
+        # Parse experiences
+        exp_pattern = re.compile(
+            r"\*\*([^*\n]+)\*\*\s*\(([^()]+)\)\s*\n\*(.*?)\*\s*\n((?:- .*\n?)+)",
+            re.MULTILINE | re.DOTALL,
+        )
+
+        for index, match in enumerate(exp_pattern.finditer(raw_text)):
+            company = match.group(1).strip()
+            position = match.group(3).strip()
+            bullets = [
+                f"- {bullet.strip()}"
+                for bullet in re.findall(r"- (.*?)(?:\n|$)", match.group(4))
+                if bullet.strip()
+            ]
+
+            improvements["experiences"][f"item_{index}"] = {
+                "company": company,
+                "position": position,
+                "improved": "\n".join(bullets),
+                "improved_description": "\n".join(bullets),
+            }
+
+        # Parse skills
+        skills_match = re.search(
+            r"\*\*Skills:\*\*\s*([\s\S]*?)(?=\n\n\*\*|\Z)", raw_text, re.DOTALL
+        )
+        if skills_match:
+            skills_text = skills_match.group(1).strip()
+            categories = {}
+
+            category_pattern = re.compile(r"\*(.*?):\*\s*(.*?)(?=\n\*|\Z)", re.DOTALL)
+            for category_match in category_pattern.finditer(skills_text):
+                category = category_match.group(1).strip()
+                skills_list = [
+                    skill.strip()
+                    for skill in category_match.group(2).split(",")
+                    if skill.strip()
+                ]
+                if skills_list:
+                    categories[category] = skills_list
+
+            improvements["skills"]["main"] = {
+                "parsed": {"type": "categorized", "categories": categories}
+            }
+
+        # Track usage
+        tokens_used = response.usage.total_tokens if response.usage else None
+        await ai_service._track_ai_usage(
+            session["session_id"], "full_cv_enhancement", tokens_used
+        )
+
+        return {"improvements": improvements}
+
+    except CloudProviderError as e:
+        raise HTTPException(status_code=502, detail=f"Cloud storage error: {str(e)}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Full CV improvement error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))

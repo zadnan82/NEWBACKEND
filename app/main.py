@@ -11,6 +11,8 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.staticfiles import StaticFiles
+
+from app.job_matching.router import router as job_matching_router
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
@@ -249,7 +251,8 @@ async def create_session_endpoint(request: Request):
 # Include routers
 app.include_router(cloud.router, prefix="/api/cloud", tags=["Cloud Storage"])
 app.include_router(resume.router, prefix="/api/resume", tags=["Resume Management"])
-app.include_router(ai_enhance.router, prefix="/api/ai", tags=["AI Enhancement"])
+# In main.py, change this line:
+app.include_router(ai_enhance.router, prefix="/api/cv-ai", tags=["AI Enhancement"])
 app.include_router(
     cover_letter.router, prefix="/api/cover-letter", tags=["Cover Letters"]
 )
@@ -259,6 +262,9 @@ app.include_router(
 app.include_router(onedrive_api.router, prefix="/api/onedrive", tags=["OneDrive"])
 
 app.include_router(dropbox_api.router, prefix="/api/dropbox", tags=["Dropbox"])
+app.include_router(
+    job_matching_router, prefix="/api/job-matching", tags=["Job Matching"]
+)
 
 
 # Startup and shutdown events

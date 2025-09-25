@@ -1,14 +1,15 @@
-# Dockerfile
 FROM python:3.11-slim
 
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies - UPDATED for job matching
 RUN apt-get update && apt-get install -y \
     gcc \
+    g++ \
     netcat-openbsd \
     curl \
+    build-essential \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for better caching

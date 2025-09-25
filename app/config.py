@@ -6,6 +6,8 @@ Configuration settings for privacy-first CV platform
 import os
 import base64
 from typing import List
+
+from pydantic import Field
 from pydantic_settings import BaseSettings
 
 
@@ -90,6 +92,13 @@ class Settings(BaseSettings):
     max_file_size_mb: int = 10
     max_files_per_session: int = 20
 
+    job_matching_cache_ttl_hours: int = Field(
+        default=1, description="Cache TTL for job analysis in hours"
+    )
+    job_matching_max_file_size_mb: int = Field(
+        default=10, description="Max file size for resume uploads in MB"
+    )
+
     # Encryption - FIXED: Proper persistent encryption key
     encryption_key: str = os.getenv(
         "ENCRYPTION_KEY", "change-this-to-32-char-key-for-prod"
@@ -123,9 +132,14 @@ class Settings(BaseSettings):
     oauth_state_expiry_minutes: int = 10
     use_redis_for_oauth_state: bool = True
 
+    redis_host: str = "localhost"
+    redis_port: int = 6379
+    redis_db: int = 0
+
     class Config:
         env_file = ".env"
         case_sensitive = False
+        extra = "allow"
 
     def validate_oauth_config(self) -> dict:
         """Validate OAuth configuration and return available providers"""

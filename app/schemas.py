@@ -1,7 +1,7 @@
 # app/schemas.py
 """
 Pydantic schemas for privacy-first CV platform.
-Preserves existing CV structure for frontend compatibility.
+Updated to accept incomplete/draft data gracefully.
 """
 
 import re
@@ -11,38 +11,41 @@ from datetime import date, datetime
 from enum import Enum
 
 
-# ================== PRESERVED CV STRUCTURE (FROM ORIGINAL) ==================
-
-
-# Core CV Component Schemas (PRESERVED EXACTLY)
-# Update PersonalInfoBase in your schemas.py to handle empty strings
-
-from pydantic import field_validator
-from datetime import date
-from typing import Optional
+# ================== CORE CV COMPONENT SCHEMAS ==================
 
 
 class PersonalInfoBase(BaseModel):
-    full_name: str = Field(..., min_length=1, max_length=100)
-    title: Optional[str] = Field(None, max_length=100)
-    email: EmailStr
-    mobile: str = Field(..., min_length=5, max_length=20)
-    city: Optional[str] = Field(None, max_length=100)
-    address: Optional[str] = Field(None, max_length=200)
-    postal_code: Optional[str] = Field(None, max_length=20)
-    driving_license: Optional[str] = Field(None, max_length=50)
-    nationality: Optional[str] = Field(None, max_length=50)
-    place_of_birth: Optional[str] = Field(None, max_length=100)
+    full_name: str = ""
+    title: Optional[str] = None
+    email: str = ""
+    mobile: str = ""
+    city: Optional[str] = None
+    address: Optional[str] = None
+    postal_code: Optional[str] = None
+    driving_license: Optional[str] = None
+    nationality: Optional[str] = None
+    place_of_birth: Optional[str] = None
     date_of_birth: Optional[date] = None
-    linkedin: Optional[str] = Field(None, max_length=200)
-    website: Optional[str] = Field(None, max_length=200)
-    summary: Optional[str] = Field(None, max_length=2000)
+    linkedin: Optional[str] = None
+    website: Optional[str] = None
+    summary: Optional[str] = None
 
     @field_validator("date_of_birth", mode="before")
     def parse_date_of_birth(cls, v):
-        """Convert empty strings to None for date_of_birth"""
         if v == "" or v is None:
             return None
+        return v
+
+    @field_validator("email", mode="before")
+    def validate_email(cls, v):
+        if not v or v == "":
+            return ""
+        return v
+
+    @field_validator("mobile", mode="before")
+    def validate_mobile(cls, v):
+        if not v or v == "" or (isinstance(v, str) and len(v.strip()) < 5):
+            return "+0000000000"
         return v
 
     @field_validator(
@@ -59,136 +62,198 @@ class PersonalInfoBase(BaseModel):
         mode="before",
     )
     def empty_string_to_none(cls, v):
-        """Convert empty strings to None for optional fields"""
         if v == "":
             return None
         return v
 
 
-# Also add similar validation to EducationBase and ExperienceBase for date fields:
-
-
 class EducationBase(BaseModel):
-    institution: str = Field(..., min_length=1, max_length=100)
-    degree: str = Field(..., min_length=1, max_length=100)
-    field_of_study: str = Field(..., min_length=1, max_length=100)
-    location: Optional[str] = Field(None, max_length=100)
-    start_date: date
+    institution: str = ""
+    degree: str = ""
+    field_of_study: str = ""
+    location: Optional[str] = None
+    start_date: Optional[date] = None
     end_date: Optional[date] = None
     current: Optional[bool] = False
-    gpa: Optional[str] = Field(None, max_length=10)
+    gpa: Optional[str] = None
+    description: Optional[str] = None
 
     @field_validator("start_date", "end_date", mode="before")
     def parse_dates(cls, v):
-        """Convert empty strings to None for dates"""
-        if v == "" or v is None:
+        if not v or v == "":
             return None
+
+        if isinstance(v, str):
+            # Handle YYYY-MM format
+            if re.match(r"^\d{4}-\d{2}$", v):
+                return f"{v}-01"
+            # Handle YYYY format
+            elif re.match(r"^\d{4}$", v):
+                return f"{v}-01-01"
+
         return v
 
-    @field_validator("location", "gpa", mode="before")
+    @field_validator("location", "gpa", "description", mode="before")
     def empty_string_to_none(cls, v):
-        """Convert empty strings to None for optional fields"""
         if v == "":
             return None
         return v
 
 
 class ExperienceBase(BaseModel):
-    company: str = Field(..., min_length=1, max_length=100)
-    position: str = Field(..., min_length=1, max_length=100)
-    location: Optional[str] = Field(None, max_length=100)
-    start_date: date
+    company: str = ""
+    position: str = ""
+    location: Optional[str] = None
+    city: Optional[str] = None
+    start_date: Optional[date] = None
     end_date: Optional[date] = None
     current: Optional[bool] = False
-    description: Optional[str] = Field(None, max_length=2000)
+    description: Optional[str] = None
 
     @field_validator("start_date", "end_date", mode="before")
     def parse_dates(cls, v):
-        """Convert empty strings to None for dates"""
-        if v == "" or v is None:
+        if not v or v == "":
             return None
+
+        if isinstance(v, str):
+            if re.match(r"^\d{4}-\d{2}$", v):
+                return f"{v}-01"
+            elif re.match(r"^\d{4}$", v):
+                return f"{v}-01-01"
+
         return v
 
-    @field_validator("location", "description", mode="before")
+    @field_validator("location", "city", "description", mode="before")
     def empty_string_to_none(cls, v):
-        """Convert empty strings to None for optional fields"""
         if v == "":
             return None
         return v
 
 
 class SkillBase(BaseModel):
-    name: str = Field(..., min_length=1, max_length=50)
-    level: Optional[str] = Field(None, max_length=20)
+    name: str = ""
+    level: Optional[str] = None
+
+    @field_validator("level", mode="before")
+    def empty_string_to_none(cls, v):
+        if v == "":
+            return None
+        return v
 
 
 class LanguageBase(BaseModel):
-    language: str = Field(..., min_length=1, max_length=50)
-    proficiency: str = Field(..., min_length=1, max_length=20)
+    language: str = ""
+    proficiency: Optional[str] = None
+
+    @field_validator("proficiency", mode="before")
+    def empty_string_to_none(cls, v):
+        if v == "":
+            return None
+        return v
 
 
 class ReferralBase(BaseModel):
-    name: str = Field(..., min_length=1, max_length=100)
-    relation: str = Field(..., min_length=1, max_length=50)
-    phone: Optional[str] = Field(None, max_length=20)
-    email: Optional[EmailStr] = None
+    name: str = ""
+    relation: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+
+    @field_validator("relation", "phone", "email", mode="before")
+    def empty_string_to_none(cls, v):
+        if v == "":
+            return None
+        return v
 
 
 class CustomSectionBase(BaseModel):
-    title: str = Field(..., min_length=1, max_length=100)
-    content: Optional[str] = Field(None, max_length=2000)
+    title: str = ""
+    content: Optional[str] = None
+
+    @field_validator("content", mode="before")
+    def empty_string_to_none(cls, v):
+        if v == "":
+            return None
+        return v
 
 
 class ExtracurricularActivityBase(BaseModel):
-    name: str = Field(..., min_length=1, max_length=100)
-    description: Optional[str] = Field(None, max_length=1000)
+    name: str = ""
+    description: Optional[str] = None
+
+    @field_validator("description", mode="before")
+    def empty_string_to_none(cls, v):
+        if v == "":
+            return None
+        return v
 
 
 class HobbyBase(BaseModel):
-    name: str = Field(..., min_length=1, max_length=50)
+    name: str = ""
 
 
 class CourseBase(BaseModel):
-    name: str = Field(..., min_length=1, max_length=100)
-    institution: Optional[str] = Field(None, max_length=100)
-    description: Optional[str] = Field(None, max_length=1000)
+    name: str = ""
+    institution: Optional[str] = None
+    completion_date: Optional[str] = None
+    description: Optional[str] = None
+
+    @field_validator("institution", "completion_date", "description", mode="before")
+    def empty_string_to_none(cls, v):
+        if v == "":
+            return None
+        return v
 
 
 class InternshipBase(BaseModel):
-    company: str = Field(..., min_length=1, max_length=100)
-    position: str = Field(..., min_length=1, max_length=100)
-    location: Optional[str] = Field(None, max_length=100)
-    start_date: date
+    company: str = ""
+    position: str = ""
+    location: Optional[str] = None
+    start_date: Optional[date] = None
     end_date: Optional[date] = None
     current: Optional[bool] = False
-    description: Optional[str] = Field(None, max_length=2000)
+    description: Optional[str] = None
+
+    @field_validator("start_date", "end_date", mode="before")
+    def parse_dates(cls, v):
+        if not v or v == "":
+            return None
+
+        if isinstance(v, str):
+            if re.match(r"^\d{4}-\d{2}$", v):
+                return f"{v}-01"
+            elif re.match(r"^\d{4}$", v):
+                return f"{v}-01-01"
+
+        return v
+
+    @field_validator("location", "description", mode="before")
+    def empty_string_to_none(cls, v):
+        if v == "":
+            return None
+        return v
 
 
-# Update PhotoBase to handle Base64 images
 class PhotoBase(BaseModel):
-    photolink: Optional[str] = Field(None)  # Can be None, URL, or Base64
+    photolink: Optional[str] = None
 
-    @field_validator("photolink")
+    @field_validator("photolink", mode="before")
     def validate_photo_link(cls, v):
         if v is None or v == "":
             return None
 
         # Allow Base64 images
         if v.startswith("data:image/"):
-            # Basic Base64 validation
             if not re.match(r"^data:image/(jpeg|jpg|png|gif|webp);base64,", v):
                 raise ValueError("Invalid Base64 image format")
 
-            # Check if the Base64 part exists
             try:
                 base64_part = v.split(",")[1]
-                if len(base64_part) < 100:  # Minimum reasonable size
+                if len(base64_part) < 100:
                     raise ValueError("Base64 image data too small")
 
-                # Optional: Check size limit (e.g., 2MB when decoded)
-                # Rough estimate: Base64 is ~33% larger than binary
+                # 2MB limit
                 estimated_size = len(base64_part) * 0.75
-                if estimated_size > 2 * 1024 * 1024:  # 2MB limit
+                if estimated_size > 2 * 1024 * 1024:
                     raise ValueError("Image too large (max 2MB)")
 
             except (IndexError, ValueError):
@@ -196,39 +261,39 @@ class PhotoBase(BaseModel):
 
             return v
 
-        # Allow regular URLs (for backwards compatibility)
+        # Allow regular URLs
         if v.startswith(("http://", "https://")):
-            if len(v) > 500:  # Reasonable URL length limit
+            if len(v) > 500:
                 raise ValueError("Photo URL too long")
             return v
 
-        # If it's neither Base64 nor URL, it's invalid
         raise ValueError("Photo must be a valid Base64 image or URL")
 
 
 class CustomizationBase(BaseModel):
-    template: str = Field("stockholm", min_length=1, max_length=50)
-    accent_color: str = Field("#1a5276", max_length=20)
-    font_family: str = Field("Helvetica, Arial, sans-serif", max_length=100)
-    line_spacing: float = Field(1.5, ge=1.0, le=2.0)
+    template: str = "stockholm"
+    accent_color: str = "#1a5276"
+    font_family: str = "Helvetica, Arial, sans-serif"
+    line_spacing: float = 1.5
     headings_uppercase: bool = False
     hide_skill_level: bool = False
-    language: str = Field("en", min_length=2, max_length=10)
+    language: str = "en"
 
     class Config:
         from_attributes = True
 
 
-# Complete CV Structure (PRESERVED)
-class CompleteCV(BaseModel):
-    """Complete CV structure - exactly as frontend expects"""
+# ================== COMPLETE CV STRUCTURE ==================
 
-    title: str = Field(..., min_length=1, max_length=100)
+
+class CompleteCV(BaseModel):
+    """Complete CV structure - accepts incomplete/draft data"""
+
+    title: str = "My Resume"
     is_public: bool = False
-    customization: CustomizationBase
+    customization: CustomizationBase = CustomizationBase()
     personal_info: Optional[PersonalInfoBase] = None
 
-    # All sections optional as lists
     educations: List[EducationBase] = []
     experiences: List[ExperienceBase] = []
     skills: List[SkillBase] = []
@@ -239,108 +304,107 @@ class CompleteCV(BaseModel):
     hobbies: List[HobbyBase] = []
     courses: List[CourseBase] = []
     internships: List[InternshipBase] = []
-
-    # Photo optional
     photo: Optional[PhotoBase] = None
 
 
-# Response Schemas with IDs (for API responses)
+# ================== RESPONSE SCHEMAS ==================
+
+
 class PersonalInfoResponse(PersonalInfoBase):
-    id: str  # Cloud file reference
+    id: str
 
     class Config:
         from_attributes = True
 
 
 class EducationResponse(EducationBase):
-    id: str  # Index in array
+    id: str
 
     class Config:
         from_attributes = True
 
 
 class ExperienceResponse(ExperienceBase):
-    id: str  # Index in array
+    id: str
 
     class Config:
         from_attributes = True
 
 
 class SkillResponse(SkillBase):
-    id: str  # Index in array
+    id: str
 
     class Config:
         from_attributes = True
 
 
 class LanguageResponse(LanguageBase):
-    id: str  # Index in array
+    id: str
 
     class Config:
         from_attributes = True
 
 
 class ReferralResponse(ReferralBase):
-    id: str  # Index in array
+    id: str
 
     class Config:
         from_attributes = True
 
 
 class CustomSectionResponse(CustomSectionBase):
-    id: str  # Index in array
+    id: str
 
     class Config:
         from_attributes = True
 
 
 class ExtracurricularActivityResponse(ExtracurricularActivityBase):
-    id: str  # Index in array
+    id: str
 
     class Config:
         from_attributes = True
 
 
 class HobbyResponse(HobbyBase):
-    id: str  # Index in array
+    id: str
 
     class Config:
         from_attributes = True
 
 
 class CourseResponse(CourseBase):
-    id: str  # Index in array
+    id: str
 
     class Config:
         from_attributes = True
 
 
 class InternshipResponse(InternshipBase):
-    id: str  # Index in array
+    id: str
 
     class Config:
         from_attributes = True
 
 
 class PhotoResponse(PhotoBase):
-    id: str  # Cloud reference
+    id: str
 
     class Config:
         from_attributes = True
 
 
 class CustomizationResponse(CustomizationBase):
-    id: str  # Part of CV file
+    id: str
 
     class Config:
         from_attributes = True
 
 
-# Complete Resume Response (what frontend expects)
 class ResumeResponse(BaseModel):
     """Frontend-compatible resume response"""
 
-    id: str  # Cloud file ID
+    id: str
     title: str
     is_public: bool = False
     customization: Optional[CustomizationResponse] = None
@@ -372,8 +436,6 @@ class CloudProvider(str, Enum):
 
 
 class CloudFileMetadata(BaseModel):
-    """Cloud file metadata"""
-
     file_id: str
     name: str
     provider: CloudProvider
@@ -383,8 +445,6 @@ class CloudFileMetadata(BaseModel):
 
 
 class CloudSession(BaseModel):
-    """Anonymous cloud session"""
-
     session_id: str
     connected_providers: List[CloudProvider]
     expires_at: datetime
@@ -392,29 +452,23 @@ class CloudSession(BaseModel):
 
 
 class CloudAuthRequest(BaseModel):
-    """Cloud provider authentication request"""
-
     provider: CloudProvider
     redirect_uri: str
 
 
 class CloudAuthResponse(BaseModel):
-    """Cloud provider authentication response"""
-
     auth_url: str
     state: str
 
 
 class CloudConnectionStatus(BaseModel):
-    """Cloud connection status"""
-
     provider: CloudProvider
     connected: bool
-    email: Optional[str] = None  # User's email from provider
+    email: Optional[str] = None
     storage_quota: Optional[Dict[str, Any]] = None
 
 
-# ================== AI ENHANCEMENT SCHEMAS (PRESERVED) ==================
+# ================== AI ENHANCEMENT SCHEMAS ==================
 
 
 class PersonalInfoSummaryRequest(BaseModel):
@@ -426,8 +480,8 @@ class ExperienceDescriptionRequest(BaseModel):
 
 
 class SkillRequest(BaseModel):
-    name: str = Field(..., min_length=1, max_length=200)
-    level: Optional[str] = Field(None, max_length=20)
+    name: str = ""
+    level: Optional[str] = None
 
     @field_validator("name")
     def process_skill_name(cls, v):
@@ -454,34 +508,32 @@ class AIUsageResponse(BaseModel):
         from_attributes = True
 
 
-# ================== COVER LETTER SCHEMAS (PRESERVED) ==================
+# ================== COVER LETTER SCHEMAS ==================
 
 
 class CoverLetterBase(BaseModel):
-    title: str = Field(..., min_length=1, max_length=200)
-    company_name: Optional[str] = Field(None, max_length=100)
-    job_title: Optional[str] = Field(None, max_length=100)
-    job_description: Optional[str] = Field(None)
-    recipient_name: Optional[str] = Field(None, max_length=100)
-    recipient_title: Optional[str] = Field(None, max_length=100)
-    cover_letter_content: str
+    title: str = ""
+    company_name: Optional[str] = None
+    job_title: Optional[str] = None
+    job_description: Optional[str] = None
+    recipient_name: Optional[str] = None
+    recipient_title: Optional[str] = None
+    cover_letter_content: str = ""
     is_favorite: Optional[bool] = False
 
 
 class CoverLetterGenerationRequest(BaseModel):
-    job_description: str = Field(
-        ..., description="Job description for cover letter generation"
-    )
-    job_title: Optional[str] = Field(None, max_length=100)
-    company_name: Optional[str] = Field(None, max_length=100)
-    recipient_name: Optional[str] = Field(None, max_length=100)
-    recipient_title: Optional[str] = Field(None, max_length=100)
-    cv_file_id: str = Field(..., description="Cloud file ID of the CV to use")
+    job_description: str
+    job_title: Optional[str] = None
+    company_name: Optional[str] = None
+    recipient_name: Optional[str] = None
+    recipient_title: Optional[str] = None
+    cv_file_id: str
 
 
 class CoverLetterResponse(CoverLetterBase):
-    id: str  # Cloud file ID
-    cv_file_id: str  # Reference to CV used
+    id: str
+    cv_file_id: str
     created_at: datetime
     updated_at: datetime
 
@@ -493,15 +545,15 @@ class CoverLetterResponse(CoverLetterBase):
 
 
 class JobAnalysisRequest(BaseModel):
-    cv_file_id: str = Field(..., description="Cloud file ID of CV to analyze")
-    job_description: str = Field(..., min_length=20, max_length=20000)
-    job_title: str = Field(..., min_length=2, max_length=200)
-    company_name: str = Field("", max_length=200)
+    cv_file_id: str
+    job_description: str
+    job_title: str
+    company_name: str = ""
 
 
 class JobAnalysisResponse(BaseModel):
-    match_score: float = Field(..., ge=0, le=100)
-    ats_compatibility_score: float = Field(..., ge=0, le=100)
+    match_score: float
+    ats_compatibility_score: float
     keywords_present: List[str] = []
     keywords_missing: List[str] = []
     recommendations: List[str] = []
@@ -532,7 +584,7 @@ class SubscriptionFeatures(BaseModel):
 class SubscriptionStatus(BaseModel):
     tier: PricingTier
     features: SubscriptionFeatures
-    usage_today: Dict[str, int]  # {"ai_enhance": 3, "cover_letter": 1}
+    usage_today: Dict[str, int]
     expires_at: Optional[datetime] = None
 
 
@@ -541,9 +593,9 @@ class SubscriptionStatus(BaseModel):
 
 class TemporaryShareRequest(BaseModel):
     cv_file_id: str
-    max_views: int = Field(50, ge=1, le=1000)
-    expires_hours: int = Field(24, ge=1, le=168)  # Max 1 week
-    password: Optional[str] = Field(None, min_length=4, max_length=50)
+    max_views: int = 50
+    expires_hours: int = 24
+    password: Optional[str] = None
 
 
 class TemporaryShareResponse(BaseModel):
@@ -572,12 +624,8 @@ class ValidationErrorResponse(BaseModel):
 
 
 class CVFileMetadata(BaseModel):
-    """Metadata stored in cloud CV files"""
-
     version: str = "1.0"
     created_at: datetime
     last_modified: datetime
     created_with: str = "cv-privacy-platform"
-
-    # Optional analytics consent
     analytics_consent: bool = False

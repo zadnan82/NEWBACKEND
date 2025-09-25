@@ -1,6 +1,4 @@
-# docker-compose.yml
-# Removed version since it's obsolete in newer Docker Compose
-
+# docker-compose.yml - WITH CELERY WORKER
 services:
   # Main application
   app:
@@ -12,6 +10,12 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - ENVIRONMENT=development
       - USE_REDIS_FOR_OAUTH_STATE=true
+      # Job Matching Settings
+      - JOB_MATCHING_CACHE_TTL_HOURS=1
+      - JOB_MATCHING_MAX_FILE_SIZE_MB=10
+      # Optional AI API Keys
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
     env_file:
       - .env
     depends_on:
@@ -20,7 +24,7 @@ services:
       redis:
         condition: service_healthy
     volumes:
-      - ./.env:/app/.env:ro  # Mount .env as read-only
+      - ./.env:/app/.env:ro
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
@@ -28,7 +32,7 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
-
+ 
   # PostgreSQL database
   db:
     image: postgres:15-alpine
@@ -47,7 +51,7 @@ services:
       timeout: 5s
       retries: 5
 
-  # Redis for caching and OAuth state
+  # Redis for caching, OAuth state, and Celery broker
   redis:
     image: redis:7-alpine
     ports:
@@ -60,7 +64,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
 
 volumes:
   postgres_data:
