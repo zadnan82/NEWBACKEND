@@ -160,10 +160,29 @@ class JobAnalysisService:
             logger.error(f"Analysis failed for session {session_id}: {str(e)}")
             raise AnalysisError(f"Analysis failed: {str(e)}")
 
+    # Updated _analyze_simple method for service.py
+
     async def _analyze_simple(
         self, resume_text: str, job_description: str, job_title: str, company_name: str
     ) -> Dict[str, Any]:
-        """Simple analysis using built-in knowledge base - always works"""
+        """Simple analysis using built-in knowledge base - FIXED to handle empty resumes"""
+
+        # STEP 1: Validate resume content first
+        from .knowledge.resume_validator import validate_and_score_resume
+
+        validation_result = validate_and_score_resume(
+            resume_text, job_title, job_description
+        )
+
+        # If resume is insufficient, return early with low score
+        if validation_result:
+            logger.warning(
+                f"Resume validation failed: {validation_result['validation_issues']}"
+            )
+            return validation_result
+
+        # STEP 2: Proceed with normal analysis for valid resumes
+        logger.info("Resume validation passed - proceeding with full analysis")
 
         # Use the universal skills matcher
         match_result = self.skills_matcher.analyze_match(
@@ -175,9 +194,26 @@ class JobAnalysisService:
             f"job market {job_title} {company_name}", k=3
         )
 
+        # STEP 3: Apply fixed scoring
+        from .knowledge.resume_validator import ResumeContentValidator, FixedScoring
+
+        validator = ResumeContentValidator()
+        validation = validator.validate_resume(resume_text)
+
+        # Use fixed scoring logic
+        fixed_score = FixedScoring.calculate_realistic_overall_score(
+            validation,
+            match_result.experience_match,
+            match_result.skill_matches,
+            match_result.qualification_matches,
+        )
+
+        # STEP 4: Return enhanced results
         return {
-            "match_score": match_result.overall_match_score,
-            "ats_compatibility_score": max(50, match_result.overall_match_score - 10),
+            "match_score": fixed_score,  # Use fixed score instead of match_result.overall_match_score
+            "ats_compatibility_score": max(
+                30, fixed_score - 10
+            ),  # ATS score based on realistic score
             "keywords_present": [
                 skill.skill
                 for skill in match_result.skill_matches
@@ -191,7 +227,8 @@ class JobAnalysisService:
             "recommendations": match_result.recommendations,
             "strengths": match_result.strengths,
             "improvement_areas": match_result.gaps,
-            "should_apply": match_result.should_apply,
+            "should_apply": match_result.should_apply
+            and fixed_score >= 60,  # Higher threshold
             "application_tips": [
                 "Tailor your resume to highlight relevant skills",
                 "Prepare examples of your experience",
@@ -200,8 +237,28 @@ class JobAnalysisService:
             "market_insights": market_insights,
             "industry_detected": match_result.industry,
             "detected_role": match_result.role,
-            "confidence_level": match_result.confidence_level,
+            "confidence_level": self._determine_confidence_level(
+                fixed_score, validation
+            ),
+            # Add validation info for debugging
+            "content_quality": validation.content_score,
+            "resume_word_count": validation.word_count,
+            "validation_warnings": validation.warnings if validation.warnings else None,
         }
+
+    def _determine_confidence_level(self, score: float, validation) -> str:
+        """Determine confidence level based on score and content quality"""
+
+        if not validation.is_valid:
+            return "Very Low"
+        elif score >= 80 and validation.content_score >= 80:
+            return "High"
+        elif score >= 65 and validation.content_score >= 60:
+            return "Medium"
+        elif score >= 45:
+            return "Low"
+        else:
+            return "Very Low"
 
     async def _analyze_with_crewai(
         self, resume_text: str, job_description: str, job_title: str, company_name: str

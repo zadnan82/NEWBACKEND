@@ -602,7 +602,11 @@ async def delete_cv_from_google_drive(
     session: dict = Depends(get_current_session),
 ):
     """Delete a CV from Google Drive"""
+
     try:
+        logger.info(f"🔍 RECEIVED DELETE REQUEST FOR: {file_id}")
+        logger.info(f"🔍 FILE ID TYPE: {type(file_id)}")
+        logger.info(f"🔍 FILE ID LENGTH: {len(file_id)}")
         cloud_tokens = session.get("cloud_tokens", {})
         google_drive_tokens = cloud_tokens.get("google_drive")
 
@@ -1360,3 +1364,79 @@ async def update_cover_letter_clean(
             "error": f"Failed to update cover letter: {str(e)}",
             "provider": "google_drive",
         }
+
+
+@router.get("/debug/list-all-files")
+async def debug_list_all_files(session: dict = Depends(get_current_session)):
+    """Debug: List ALL files in Google Drive to see what's actually there"""
+    try:
+        cloud_tokens = session.get("cloud_tokens", {})
+        google_drive_tokens = cloud_tokens.get("google_drive")
+
+        if not google_drive_tokens:
+            return {"error": "No Google Drive connection found"}
+
+        access_token = google_drive_tokens["access_token"]
+
+        async with GoogleDriveProvider(access_token) as provider:
+            # List ALL files, not just in CVs folder
+            url = f"{provider.api_base}/files"
+            params = {
+                "q": "trashed=false",
+                "fields": "files(id, name, parents, mimeType, createdTime)",
+                "pageSize": 100,
+            }
+
+            result = await provider._make_request("GET", url, params=params)
+
+            return {
+                "total_files": len(result.get("files", [])),
+                "files": result.get("files", []),
+            }
+
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@router.delete("/debug/raw-delete/{file_id}")
+async def debug_raw_delete(
+    file_id: str,
+    session: dict = Depends(get_current_session),
+):
+    """Debug: Make raw Google Drive API delete call with full logging"""
+    try:
+        cloud_tokens = session.get("cloud_tokens", {})
+        google_drive_tokens = cloud_tokens.get("google_drive")
+
+        access_token = google_drive_tokens["access_token"]
+
+        # Make the raw API call with full logging
+        import aiohttp
+
+        url = f"https://www.googleapis.com/drive/v3/files/{file_id}"
+        headers = {"Authorization": f"Bearer {access_token}"}
+
+        logger.info(f"🔍 RAW DELETE: Making request to {url}")
+        logger.info(f"🔍 RAW DELETE: Headers: {headers}")
+
+        async with aiohttp.ClientSession() as session:
+            async with session.delete(url, headers=headers) as response:
+                status = response.status
+                response_text = await response.text()
+                response_headers = dict(response.headers)
+
+                logger.info(f"🔍 RAW DELETE RESPONSE STATUS: {status}")
+                logger.info(f"🔍 RAW DELETE RESPONSE TEXT: {response_text}")
+                logger.info(f"🔍 RAW DELETE RESPONSE HEADERS: {response_headers}")
+
+                return {
+                    "status": status,
+                    "response_text": response_text,
+                    "response_headers": response_headers,
+                    "success": status
+                    == 204,  # Google Drive returns 204 for successful deletes
+                }
+
+    except Exception as e:
+        logger.error(f"🔍 RAW DELETE ERROR: {e}")
+        return {"error": str(e)}

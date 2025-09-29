@@ -629,13 +629,24 @@ async def load_cover_letter_from_dropbox(
         )
 
 
-@router.delete("/delete/{file_id}")
+@router.delete("/delete/{file_id:path}")
 async def delete_cv_from_dropbox(
     file_id: str,
     session: dict = Depends(get_current_session),
 ):
     """Delete a CV from Dropbox"""
     try:
+        # URL decode and fix path format
+        import urllib.parse
+
+        decoded_file_id = urllib.parse.unquote(file_id)
+
+        # Ensure proper Dropbox path format
+        if not decoded_file_id.startswith("/"):
+            decoded_file_id = "/" + decoded_file_id
+
+        logger.info(f"🗑️ Deleting CV from Dropbox: {decoded_file_id}")
+
         cloud_tokens = session.get("cloud_tokens", {})
         dropbox_tokens = cloud_tokens.get("dropbox")
 
@@ -653,7 +664,7 @@ async def delete_cv_from_dropbox(
             )
 
         # Delete CV from Dropbox
-        success = await dropbox_service.delete_cv(valid_tokens, file_id)
+        success = await dropbox_service.delete_cv(valid_tokens, decoded_file_id)
 
         if not success:
             raise HTTPException(
@@ -664,14 +675,14 @@ async def delete_cv_from_dropbox(
         await record_session_activity(
             session["session_id"],
             "cv_deleted",
-            {"provider": "dropbox", "file_id": file_id},
+            {"provider": "dropbox", "file_id": decoded_file_id},
         )
 
         return {
             "success": True,
             "message": "CV deleted successfully",
             "provider": "dropbox",
-            "file_id": file_id,
+            "file_id": decoded_file_id,
         }
 
     except DropboxError as e:
